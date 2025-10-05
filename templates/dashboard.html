@@ -17,10 +17,40 @@
     th, td { border: 1px solid #30363d; padding: 8px; text-align: left; }
     th { background: #21262d; }
     tr:nth-child(even) { background: #161b22; }
+
+    form {
+      border: 2px dashed #30363d;
+      padding: 1rem;
+      border-radius: 12px;
+      margin-bottom: 2rem;
+      background: #161b22;
+    }
+    input[type="file"] {
+      background: none;
+      color: #58a6ff;
+      border: none;
+    }
+    button {
+      background: #238636;
+      color: white;
+      border: none;
+      padding: 6px 14px;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    button:hover { background: #2ea043; }
   </style>
 </head>
 <body>
   <h1>🛫 X-Plane Logbook Dashboard</h1>
+
+  <form action="/" method="POST" enctype="multipart/form-data">
+    <label><strong>Upload another logbook (.txt):</strong></label><br>
+    <input type="file" name="logfile" accept=".txt" required>
+    <button type="submit">Upload</button>
+  </form>
+
+  <p>Currently viewing: <strong>{{ filename }}</strong></p>
   <p>Total Flight Hours: <strong>{{ "%.1f"|format(data.total_hours) }}</strong> hrs</p>
 
   <h2>Hours per Aircraft</h2>
@@ -58,53 +88,26 @@
 
   <script>
     const data = {{ data|tojson }};
-    new Chart(document.getElementById("hoursByAircraft"), {
-      type: 'bar',
-      data: {
-        labels: Object.keys(data.flights_by_aircraft),
-        datasets: [{
-          label: 'Hours',
-          data: Object.values(data.flights_by_aircraft),
-          backgroundColor: '#58a6ff'
-        }]
-      },
-      options: { plugins: { legend: { display: false } } }
-    });
+    const createChart = (id, type, labels, values, color, horizontal=false) => {
+      new Chart(document.getElementById(id), {
+        type: type,
+        data: { labels, datasets: [{ label: id, data: values, backgroundColor: color }] },
+        options: { indexAxis: horizontal ? 'y' : 'x', plugins: { legend: { display: false } } }
+      });
+    };
 
-    new Chart(document.getElementById("countByAircraft"), {
-      type: 'bar',
-      data: {
-        labels: Object.keys(data.count_by_aircraft),
-        datasets: [{
-          label: 'Flights',
-          data: Object.values(data.count_by_aircraft),
-          backgroundColor: '#f39c12'
-        }]
-      },
-      options: { plugins: { legend: { display: false } } }
-    });
-
-    new Chart(document.getElementById("routesChart"), {
-      type: 'bar',
-      data: {
-        labels: Object.keys(data.flights_by_route),
-        datasets: [{
-          label: 'Flights',
-          data: Object.values(data.flights_by_route),
-          backgroundColor: '#2ecc71'
-        }]
-      },
-      options: { plugins: { legend: { display: false } }, indexAxis: 'y' }
-    });
+    createChart("hoursByAircraft", "bar", Object.keys(data.flights_by_aircraft), Object.values(data.flights_by_aircraft), "#58a6ff");
+    createChart("countByAircraft", "bar", Object.keys(data.count_by_aircraft), Object.values(data.count_by_aircraft), "#f39c12");
+    createChart("routesChart", "bar", Object.keys(data.flights_by_route), Object.values(data.flights_by_route), "#2ecc71", true);
 
     new Chart(document.getElementById("hoursOverTime"), {
-      type: 'line',
+      type: "line",
       data: {
         labels: Object.keys(data.flights_by_date),
         datasets: [{
-          label: 'Hours Flown',
+          label: "Hours Flown",
           data: Object.values(data.flights_by_date),
-          borderColor: '#e74c3c',
+          borderColor: "#e74c3c",
           fill: false
         }]
       },

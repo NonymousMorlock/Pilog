@@ -1,18 +1,23 @@
-from flask import Flask, render_template
-from datetime import datetime
-from collections import defaultdict
 import os
+import tempfile
+from collections import defaultdict
+from datetime import datetime
+
+from flask import Flask, render_template, request
 
 app = Flask(__name__)
 
-LOG_FILE = "logs/X-Plane Pilot.txt"
+app.config['UPLOAD_FOLDER'] = tempfile.gettempdir()
+app.config['MAX_CONTENT_LENGTH'] = 2 * 1024 * 1024  # 2MB limit
 
-def parse_logbook():
+DEFAULT_LOG_FILE = "logs/X-Plane Pilot.txt"
+
+def parse_logbook(file_path):
     flights = []
-    if not os.path.exists(LOG_FILE):
+    if not os.path.exists(file_path):
         return flights
 
-    with open(LOG_FILE) as f:
+    with open(file_path) as f:
         for line in f:
             parts = line.strip().split()
             if len(parts) < 11 or parts[0] != "2":
@@ -40,12 +45,7 @@ def parse_logbook():
                 continue
     return flights
 
-
-@app.route("/")
-def dashboard():
-    flights = parse_logbook()
-
-    # Aggregate data
+def summarise_flights(flights):
     total_hours = sum(f["hours"] for f in flights)
     flights_by_aircraft = defaultdict(float)
     count_by_aircraft = defaultdict(int)
@@ -58,7 +58,7 @@ def dashboard():
         flights_by_route[f"{f['dep']} → {f['arr']}"] += 1
         flights_by_date[f["date"]] += f["hours"]
 
-    data = {
+    return {
         "total_hours": total_hours,
         "flights_by_aircraft": dict(flights_by_aircraft),
         "count_by_aircraft": dict(count_by_aircraft),
@@ -66,7 +66,23 @@ def dashboard():
         "flights_by_date": dict(flights_by_date),
     }
 
-    return render_template("dashboard.html", data=data, flights=flights)
+@app.route("/", methods=['GET', 'POST'])
+def dashboard():
+    file_path = DEFAULT_LOG_FILE
+    filename = "Default Logbook"
+
+    if request.method == "POST":
+        uploaded_file = request.files.get("logfile")
+        if uploaded_file and uploaded_file.filename.endswith(".txt"):
+            temp_path = os.path.join(app.config['UPLOAD_FOLDER'], uploaded_file.filename)
+            uploaded_file.save(temp_path)
+            file_path = temp_path
+            filename = uploaded_file.filename
+
+    flights = parse_logbook(file_path)
+    data = summarise_flights(flights)
+
+    return render_template("dashboard.html", data=data, flights=flights, filename=filename)
 
 
 if __name__ == "__main__":
