@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Pilog</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    body {
+      font-family: "Inter", sans-serif;
+      margin: 2rem;
+      background: #0d1117;
+      color: #c9d1d9;
+    }
+    h1, h2 { color: #58a6ff; }
+    canvas { margin: 2rem 0; max-width: 800px; }
+    table { border-collapse: collapse; width: 100%; margin-top: 2rem; }
+    th, td { border: 1px solid #30363d; padding: 8px; text-align: left; }
+    th { background: #21262d; }
+    tr:nth-child(even) { background: #161b22; }
+  </style>
+</head>
+<body>
+  <h1>🛫 X-Plane Logbook Dashboard</h1>
+  <p>Total Flight Hours: <strong>{{ "%.1f"|format(data.total_hours) }}</strong> hrs</p>
+
+  <h2>Hours per Aircraft</h2>
+  <canvas id="hoursByAircraft"></canvas>
+
+  <h2>Flights per Aircraft</h2>
+  <canvas id="countByAircraft"></canvas>
+
+  <h2>Flights per Route</h2>
+  <canvas id="routesChart"></canvas>
+
+  <h2>Flight Hours Over Time</h2>
+  <canvas id="hoursOverTime"></canvas>
+
+  <h2>Flight Log</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Date</th><th>From</th><th>To</th><th>Hours</th><th>Aircraft</th><th>Tail</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for f in flights %}
+      <tr>
+        <td>{{ f.date }}</td>
+        <td>{{ f.dep }}</td>
+        <td>{{ f.arr }}</td>
+        <td>{{ "%.1f"|format(f.hours) }}</td>
+        <td>{{ f.aircraft }}</td>
+        <td>{{ f.tail }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <script>
+    const data = {{ data|tojson }};
+    new Chart(document.getElementById("hoursByAircraft"), {
+      type: 'bar',
+      data: {
+        labels: Object.keys(data.flights_by_aircraft),
+        datasets: [{
+          label: 'Hours',
+          data: Object.values(data.flights_by_aircraft),
+          backgroundColor: '#58a6ff'
+        }]
+      },
+      options: { plugins: { legend: { display: false } } }
+    });
+
+    new Chart(document.getElementById("countByAircraft"), {
+      type: 'bar',
+      data: {
+        labels: Object.keys(data.count_by_aircraft),
+        datasets: [{
+          label: 'Flights',
+          data: Object.values(data.count_by_aircraft),
+          backgroundColor: '#f39c12'
+        }]
+      },
+      options: { plugins: { legend: { display: false } } }
+    });
+
+    new Chart(document.getElementById("routesChart"), {
+      type: 'bar',
+      data: {
+        labels: Object.keys(data.flights_by_route),
+        datasets: [{
+          label: 'Flights',
+          data: Object.values(data.flights_by_route),
+          backgroundColor: '#2ecc71'
+        }]
+      },
+      options: { plugins: { legend: { display: false } }, indexAxis: 'y' }
+    });
+
+    new Chart(document.getElementById("hoursOverTime"), {
+      type: 'line',
+      data: {
+        labels: Object.keys(data.flights_by_date),
+        datasets: [{
+          label: 'Hours Flown',
+          data: Object.values(data.flights_by_date),
+          borderColor: '#e74c3c',
+          fill: false
+        }]
+      },
+      options: { scales: { y: { beginAtZero: true } } }
+    });
+  </script>
+</body>
+</html>
