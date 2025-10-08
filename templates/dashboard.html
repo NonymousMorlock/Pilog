@@ -44,9 +44,15 @@
 <body>
   <h1>🛫 X-Plane Logbook Dashboard</h1>
 
+  <form id="watcherForm" onsubmit="return false;">
+    <label for="chooseFolderBtn"><strong>Choose folder to watch (contains X-Plane Pilot.txt):</strong></label><br>
+    <button id="chooseFolderBtn" type="button" onclick="chooseFolder()">Choose Folder…</button>
+    <span id="watchedFolder" style="margin-left: 8px; color:#8b949e;">{{ watched_folder if watched_folder else '' }}</span>
+  </form>
+
   <form action="/" method="POST" enctype="multipart/form-data">
-    <label><strong>Upload another logbook (.txt):</strong></label><br>
-    <input type="file" name="logfile" accept=".txt" required>
+    <label for="logfileInput"><strong>Upload another logbook (.txt):</strong></label><br>
+    <input id="logfileInput" type="file" name="logfile" accept=".txt" required>
     <button type="submit">Upload</button>
   </form>
 
@@ -88,6 +94,34 @@
 
   <script>
     const data = {{ data|tojson }};
+    const baseline = {
+      totalHours: data.total_hours,
+      flightsCount: {{ flights|length }}
+    };
+
+    async function chooseFolder() {
+      try {
+        const res = await fetch('/pick_folder', { method: 'POST' });
+        const json = await res.json();
+        if (!res.ok) {
+          alert(json.error || 'Failed to pick folder');
+          return;
+        }
+        const formData = new FormData();
+        formData.append('folder_path', json.folder_path);
+        const setRes = await fetch('/set_folder', { method: 'POST', body: formData });
+        const setJson = await setRes.json();
+        if (!setRes.ok) {
+          alert(setJson.error || 'Failed to set folder');
+          return;
+        }
+        document.getElementById('watchedFolder').textContent = json.folder_path;
+        // Reload once to reflect the latest parsed data
+        location.reload();
+      } catch (e) {
+        alert('Error choosing folder: ' + e);
+      }
+    }
     const createChart = (id, type, labels, values, color, horizontal=false) => {
       new Chart(document.getElementById(id), {
         type: type,
@@ -113,6 +147,24 @@
       },
       options: { scales: { y: { beginAtZero: true } } }
     });
+
+    // Lightweight auto-refresh: if totals change on the server (watcher update), reload
+    (function autoRefresh() {
+      async function tick() {
+        try {
+          const res = await fetch('/data');
+          const json = await res.json();
+          const currentHours = json.summary ? json.summary.total_hours : 0;
+          const currentFlights = json.flights ? json.flights.length : 0;
+          if (Math.abs(currentHours - baseline.totalHours) > 1e-6 || currentFlights !== baseline.flightsCount) {
+            location.reload();
+            return;
+          }
+        } catch(_) {}
+        setTimeout(tick, 10000);
+      }
+      setTimeout(tick, 10000);
+    })();
   </script>
 </body>
 </html>
