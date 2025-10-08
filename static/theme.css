@@ -1,0 +1,95 @@
+:root {
+  --bg: #ffffff;
+  --text: #0f172a;
+  --muted: #64748b;
+  --primary: #2563eb;
+  --primary-contrast: #ffffff;
+  --surface: #f8fafc;
+  --border: #e2e8f0;
+  --success: #16a34a;
+  --warning: #d97706;
+  --danger: #dc2626;
+  --link: #2563eb;
+}
+
+:root[data-theme="dark"] {
+  --bg: #0d1117;
+  --text: #c9d1d9;
+  --muted: #8b949e;
+  --primary: #58a6ff;
+  --primary-contrast: #0d1117;
+  --surface: #161b22;
+  --border: #30363d;
+  --success: #2ea043;
+  --warning: #e3b341;
+  --danger: #ff7b72;
+  --link: #58a6ff;
+}
+
+/* Base */
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0;
+  font-family: "Inter", ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+  background: var(--bg);
+  color: var(--text);
+}
+
+.container { max-width: 1120px; margin: 0 auto; padding: 24px; }
+.skip-link { position: absolute; left: -9999px; top: auto; width: 1px; height: 1px; overflow: hidden; }
+.skip-link:focus { left: 12px; top: 12px; width: auto; height: auto; padding: 8px 12px; background: var(--primary); color: var(--primary-contrast); border-radius: 6px; }
+
+/* Topbar */
+.topbar { position: sticky; top: 0; z-index: 10; background: var(--surface); border-bottom: 1px solid var(--border); }
+.nav { display: flex; align-items: center; justify-content: space-between; gap: 16px; max-width: 1120px; margin: 0 auto; padding: 12px 24px; }
+.brand-link { text-decoration: none; font-weight: 700; color: var(--text); }
+.nav-list { list-style: none; display: flex; gap: 12px; margin: 0; padding: 0; }
+.nav-link { text-decoration: none; color: var(--link); padding: 6px 8px; border-radius: 6px; }
+.nav-link:focus { outline: 2px solid var(--link); outline-offset: 2px; }
+.nav-actions { display: flex; gap: 8px; }
+
+/* Buttons */
+.btn { background: var(--primary); color: var(--primary-contrast); border: none; padding: 6px 14px; border-radius: 6px; cursor: pointer; }
+.btn:hover { filter: brightness(0.95); }
+.btn.ghost { background: transparent; color: var(--text); border: 1px solid var(--border); }
+.btn.ghost:hover { background: var(--surface); }
+
+/* Forms */
+form.card { border: 1px dashed var(--border); border-radius: 12px; padding: 16px; background: var(--surface); margin-bottom: 16px; }
+label { display: block; margin-bottom: 8px; color: var(--text); }
+input[type="file"] { color: var(--link); }
+
+/* Tables */
+table { border-collapse: collapse; width: 100%; margin-top: 16px; }
+th, td { border: 1px solid var(--border); padding: 8px; text-align: left; }
+th { background: var(--surface); }
+tr:nth-child(even) { background: color-mix(in oklab, var(--surface), var(--bg) 40%); }
+
+/* Chips */
+.chip { padding: 2px 8px; border-radius: 10px; font-size: 12px; display: inline-block; }
+.ok { background: color-mix(in oklab, var(--success), transparent 80%); color: var(--success); }
+.warn { background: color-mix(in oklab, var(--warning), transparent 80%); color: var(--warning); }
+.bad { background: color-mix(in oklab, var(--danger), transparent 80%); color: var(--danger); }
+.muted { color: var(--muted); }
+
+/* Toasts */
+.toasts { position: fixed; bottom: 16px; right: 16px; display: flex; flex-direction: column; gap: 8px; z-index: 50; }
+.toast { background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; box-shadow: 0 4px 10px rgba(0,0,0,.1); }
+.toast.success { border-color: var(--success); }
+.toast.error { border-color: var(--danger); }
+
+/* Utility */
+.row { display: flex; gap: 12px; align-items: center; }
+.spacer { height: 12px; }
+
+/* Responsive tweaks */
+@media (max-width: 640px) {
+  .container { padding: 16px; }
+  .nav { padding: 10px 16px; }
+  .nav-list { gap: 8px; }
+  canvas { max-width: 100% !important; }
+  table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+

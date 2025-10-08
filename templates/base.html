@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Pilog{% endblock %}</title>
+  <link rel="stylesheet" href="/static/theme.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+  {% block extra_head %}{% endblock %}
+</head>
+<body>
+  <a href="#main" class="skip-link">Skip to content</a>
+  <header class="topbar" role="banner">
+    <nav class="nav" role="navigation" aria-label="Main">
+      <div class="brand">
+        <a href="/" class="brand-link">Pilog</a>
+      </div>
+      <ul class="nav-list">
+        <li><a href="/" class="nav-link">Dashboard</a></li>
+        <li><a href="/landing-rates" class="nav-link">Landing Rates</a></li>
+      </ul>
+      <div class="nav-actions">
+        <button id="themeToggle" class="btn ghost" type="button" aria-pressed="false" aria-label="Toggle color theme">
+          Theme
+        </button>
+      </div>
+    </nav>
+  </header>
+
+  <main id="main" class="container" role="main">
+    {% block content %}{% endblock %}
+  </main>
+
+  <div id="toastContainer" class="toasts" role="region" aria-live="polite" aria-atomic="true"></div>
+
+  <script src="/static/app.js"></script>
+  {% block scripts %}{% endblock %}
+</body>
+</html>
+
+

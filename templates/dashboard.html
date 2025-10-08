@@ -1,65 +1,26 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <title>Pilog</title>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-  <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
-  <style>
-    body {
-      font-family: "Inter", sans-serif;
-      margin: 2rem;
-      background: #0d1117;
-      color: #c9d1d9;
-    }
-    h1, h2 { color: #58a6ff; }
-    canvas { margin: 2rem 0; max-width: 800px; }
-    table { border-collapse: collapse; width: 100%; margin-top: 2rem; }
-    th, td { border: 1px solid #30363d; padding: 8px; text-align: left; }
-    th { background: #21262d; }
-    tr:nth-child(even) { background: #161b22; }
+{% extends "base.html" %}
 
-    form {
-      border: 2px dashed #30363d;
-      padding: 1rem;
-      border-radius: 12px;
-      margin-bottom: 2rem;
-      background: #161b22;
-    }
-    input[type="file"] {
-      background: none;
-      color: #58a6ff;
-      border: none;
-    }
-    button {
-      background: #238636;
-      color: white;
-      border: none;
-      padding: 6px 14px;
-      border-radius: 6px;
-      cursor: pointer;
-    }
-    button:hover { background: #2ea043; }
-    label { display: block; margin-bottom: 0.5rem; }
-  </style>
-</head>
-<body>
+{% block title %}Pilog · Dashboard{% endblock %}
+
+{% block content %}
   <h1>🛫 X-Plane Logbook Dashboard</h1>
 
-  <div style="margin: 12px 0;">
-    <a href="/landing-rates" style="background:#30363d; color:#58a6ff; padding:8px 12px; border-radius:8px; text-decoration:none;">Open Landing Rates</a>
+  <div class="spacer"></div>
+  <div class="row">
+    <a href="/landing-rates" class="btn ghost">Open Landing Rates</a>
   </div>
 
-  <form id="watcherForm" onsubmit="return false;">
+  <div class="spacer"></div>
+  <form id="watcherForm" onsubmit="return false;" class="card">
     <label for="chooseFolderBtn"><strong>Choose folder to watch (contains X-Plane Pilot.txt):</strong></label>
-    <button id="chooseFolderBtn" type="button" onclick="chooseFolder()">Choose Folder…</button>
-    <span id="watchedFolder" style="margin-left: 8px; color:#8b949e;">{{ watched_folder if watched_folder else '' }}</span>
+    <button id="chooseFolderBtn" class="btn" type="button" onclick="chooseFolder()">Choose Folder…</button>
+    <span id="watchedFolder" class="muted" style="margin-left: 8px;">{{ watched_folder if watched_folder else '' }}</span>
   </form>
 
-  <form action="/" method="POST" enctype="multipart/form-data">
+  <form action="/" method="POST" enctype="multipart/form-data" class="card">
     <label for="logfileInput"><strong>Upload another logbook (.txt):</strong></label>
     <input id="logfileInput" type="file" name="logfile" accept=".txt" required>
-    <button type="submit">Upload</button>
+    <button class="btn" type="submit">Upload</button>
   </form>
 
   <p>Currently viewing: <strong id="currentFilename">{{ filename }}</strong></p>
@@ -78,15 +39,24 @@
   <canvas id="hoursOverTime"></canvas>
 
   <h2>Flight Log</h2>
-  <div id="flightPager" style="margin: 8px 0; display: flex; align-items: center; gap: 8px;">
-    <button id="prevFlightPage" type="button">Prev</button>
-    <span id="flightPageInfo" style="color:#8b949e;">Page 1</span>
-    <button id="nextFlightPage" type="button">Next</button>
+  <div class="row" style="margin: 8px 0; align-items: center;">
+    <input id="flightSearch" type="search" placeholder="Search by route, aircraft, tail…" aria-label="Search flights" style="flex:1; padding:8px; border:1px solid var(--border); border-radius:6px; background: var(--bg); color: var(--text);" />
+    <div id="flightPager" class="row" style="margin-left:auto;">
+      <button id="prevFlightPage" class="btn ghost" type="button">Prev</button>
+      <span id="flightPageInfo" class="muted">Page 1</span>
+      <button id="nextFlightPage" class="btn ghost" type="button">Next</button>
+    </div>
   </div>
   <table>
     <thead>
       <tr>
-        <th>Date</th><th>From</th><th>To</th><th>Hours</th><th>Aircraft</th><th>Tail</th>{% if landing_available %}<th>Landing Rate</th>{% endif %}
+        <th scope="col" data-sort-key="date" aria-sort="none" style="cursor:pointer;">Date</th>
+        <th scope="col" data-sort-key="dep" aria-sort="none" style="cursor:pointer;">From</th>
+        <th scope="col" data-sort-key="arr" aria-sort="none" style="cursor:pointer;">To</th>
+        <th scope="col" data-sort-key="hours" aria-sort="none" style="cursor:pointer;">Hours</th>
+        <th scope="col" data-sort-key="aircraft" aria-sort="none" style="cursor:pointer;">Aircraft</th>
+        <th scope="col" data-sort-key="tail" aria-sort="none" style="cursor:pointer;">Tail</th>
+        {% if landing_available %}<th>Landing Rate</th>{% endif %}
       </tr>
     </thead>
     <tbody id="flightTableBody">
@@ -101,185 +71,20 @@
         {% if landing_available %}
         <td>
           {% set li = landing_index_for_flight[loop.index0] %}
-          <a
-            href="/landing-rates?date={{ f.date }}&aircraft={{ f.aircraft }}{% if li is not none %}&landingIndex={{ li }}{% endif %}"
-            style="color:#58a6ff;"
-            title="View landing rate(s) for this flight (if linked)">
-            View
-          </a>
+          <a href="/landing-rates?date={{ f.date }}&aircraft={{ f.aircraft }}{% if li is not none %}&landingIndex={{ li }}{% endif %}" style="color:var(--link);" title="View landing rate(s) for this flight (if linked)">View</a>
         </td>
         {% endif %}
       </tr>
       {% endfor %}
     </tbody>
   </table>
+
   <script id="initialData" type="application/json">{{ data|tojson }}</script>
   <script id="initialFlights" type="application/json">{{ flights|tojson }}</script>
   <script id="initialLandingIndexMap" type="application/json">{{ landing_index_for_flight|tojson if landing_index_for_flight else '[]' }}</script>
   <script id="initialLandingAvailable" type="application/json">{{ 'true' if landing_available else 'false' }}</script>
-  <script>
-    const charts = {};
-    const initialData = JSON.parse(document.getElementById('initialData').textContent);
-    let allFlights = JSON.parse(document.getElementById('initialFlights').textContent || '[]');
-    let landingIdxMap = JSON.parse(document.getElementById('initialLandingIndexMap').textContent || '[]');
-    let landingAvailable = (document.getElementById('initialLandingAvailable').textContent === 'true');
-    let flightPage = 0;
-    const flightPageSize = 25;
+{% endblock %}
 
-    async function chooseFolder() {
-      try {
-        const res = await fetch('/pick_folder', { method: 'POST' });
-        const json = await res.json();
-        if (!res.ok) {
-          alert(json.error || 'Failed to pick folder');
-          return;
-        }
-        const formData = new FormData();
-        formData.append('folder_path', json.folder_path);
-        const setRes = await fetch('/set_folder', { method: 'POST', body: formData });
-        const setJson = await setRes.json();
-        if (!setRes.ok) {
-          alert(setJson.error || 'Failed to set folder');
-          return;
-        }
-        document.getElementById('watchedFolder').textContent = json.folder_path;
-        const dres = await fetch('/data');
-        const djson = await dres.json();
-        if (djson && djson.summary) {
-          renderFromSummary(djson.summary);
-        }
-      } catch (e) {
-        alert('Error choosing folder: ' + e);
-      }
-    }
-    const createChart = (id, type, labels, values, color, horizontal=false) => {
-      if (charts[id]) { try { charts[id].destroy(); } catch(_) {} }
-      charts[id] = new Chart(document.getElementById(id), {
-        type: type,
-        data: { labels, datasets: [{ label: id, data: values, backgroundColor: color }] },
-        options: { indexAxis: horizontal ? 'y' : 'x', plugins: { legend: { display: false } } }
-      });
-    };
-    function esc(s) {
-      return String(s == null ? '' : s)
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#39;');
-    }
-
-    const renderFlightTable = (flights) => {
-      try {
-        const tbody = document.getElementById('flightTableBody');
-        if (!tbody || !Array.isArray(flights)) return;
-        tbody.innerHTML = '';
-        const start = flightPage * flightPageSize;
-        const end = Math.min(start + flightPageSize, flights.length);
-        const pageFlights = flights.slice(start, end);
-        for (let i = 0; i < pageFlights.length; i++) {
-          const globalIdx = start + i;
-          const f = pageFlights[i];
-          const tr = document.createElement('tr');
-          tr.id = 'flight-row-' + globalIdx;
-          let linkCell = '';
-          if (landingAvailable) {
-            const li = Array.isArray(landingIdxMap) ? landingIdxMap[globalIdx] : null;
-            const href = `/landing-rates?date=${encodeURIComponent(f.date)}&aircraft=${encodeURIComponent(f.aircraft)}${li != null ? ('&landingIndex=' + li) : ''}`;
-            linkCell = `<td><a href="${href}" style="color:#58a6ff;">View</a></td>`;
-          }
-          tr.innerHTML = `
-            <td>${esc(f.date)}</td>
-            <td>${esc(f.dep)}</td>
-            <td>${esc(f.arr)}</td>
-            <td>${(Number(f.hours) || 0).toFixed(1)}</td>
-            <td>${esc(f.aircraft)}</td>
-            <td>${esc(f.tail)}</td>
-            ${linkCell}
-          `;
-          tbody.appendChild(tr);
-        }
-        const info = document.getElementById('flightPageInfo');
-        if (info) {
-          const totalPages = Math.max(1, Math.ceil(flights.length / flightPageSize));
-          info.textContent = `Page ${Math.min(flightPage + 1, totalPages)} of ${totalPages}`;
-        }
-      } catch(_) {}
-    };
-
-    const renderFromSummary = (summary) => {
-      // Update header figures
-      const hours = (Number(summary.total_hours) || 0).toFixed(1);
-      const hoursEl = document.getElementById('totalHours');
-      if (hoursEl) hoursEl.textContent = hours;
-      createChart("hoursByAircraft", "bar", Object.keys(summary.flights_by_aircraft), Object.values(summary.flights_by_aircraft), "#58a6ff");
-      createChart("countByAircraft", "bar", Object.keys(summary.count_by_aircraft), Object.values(summary.count_by_aircraft), "#f39c12");
-      createChart("routesChart", "bar", Object.keys(summary.flights_by_route), Object.values(summary.flights_by_route), "#2ecc71", true);
-      if (charts["hoursOverTime"]) { try { charts["hoursOverTime"].destroy(); } catch(_) {} }
-      charts["hoursOverTime"] = new Chart(document.getElementById("hoursOverTime"), {
-        type: "line",
-        data: {
-          labels: Object.keys(summary.flights_by_date),
-          datasets: [{
-            label: "Hours Flown",
-            data: Object.values(summary.flights_by_date),
-            borderColor: "#e74c3c",
-            fill: false
-          }]
-        },
-        options: { scales: { y: { beginAtZero: true } } }
-      });
-    };
-
-    // Initial render from server-rendered data
-    renderFromSummary(initialData);
-    // Initial client-side table render with pagination
-    renderFlightTable(allFlights);
-
-    document.getElementById('prevFlightPage').onclick = () => { if (flightPage > 0) { flightPage--; renderFlightTable(allFlights); } };
-    document.getElementById('nextFlightPage').onclick = () => {
-      const totalPages = Math.max(1, Math.ceil(allFlights.length / flightPageSize));
-      if (flightPage + 1 < totalPages) { flightPage++; renderFlightTable(allFlights); }
-    };
-
-    // Live updates via Socket.IO
-    const socket = io();
-    socket.on('log_update', (payload) => {
-      if (payload && payload.summary) {
-        renderFromSummary(payload.summary);
-      }
-      if (payload && payload.flights) {
-        allFlights = payload.flights || [];
-        if (Array.isArray(payload.landing_index_for_flight)) landingIdxMap = payload.landing_index_for_flight;
-        if (typeof payload.landing_available === 'boolean') landingAvailable = payload.landing_available;
-        // Keep current page in range
-        const totalPages = Math.max(1, Math.ceil(allFlights.length / flightPageSize));
-        if (flightPage >= totalPages) flightPage = totalPages - 1;
-        renderFlightTable(allFlights);
-      }
-      if (payload && payload.filename) {
-        const fnEl = document.getElementById('currentFilename');
-        if (fnEl) fnEl.textContent = payload.filename;
-      }
-      if (payload && payload.watched_folder) {
-        const wfEl = document.getElementById('watchedFolder');
-        if (wfEl) wfEl.textContent = payload.watched_folder;
-      }
-    });
-
-    // Highlight/scroll to a target flight row when deep-linked
-    (function() {
-      const params = new URLSearchParams(window.location.search);
-      const idxStr = params.get('flightIndex');
-      if (!idxStr) { return; }
-      const idx = Number(idxStr);
-      if (!Number.isFinite(idx)) { return; }
-      // Navigate to the page that contains this index
-      flightPage = Math.floor(idx / flightPageSize);
-      renderFlightTable(allFlights);
-      const row = document.getElementById('flight-row-' + idx);
-      if (row) { row.style.outline = '2px solid #58a6ff'; row.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
-    })();
-  </script>
-</body>
-</html>
+{% block scripts %}
+  <script src="/static/dashboard.js"></script>
+{% endblock %}
