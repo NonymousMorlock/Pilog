@@ -24,40 +24,58 @@
       <input id="clusterMinutes" type="number" min="1" max="60" step="1" value="10" style="width:90px; padding:6px; border:1px solid var(--border); border-radius:6px; background: var(--bg); color: var(--text);">
       <button class="btn" id="saveCluster" type="button">Save</button>
       <span id="clusterStatus" class="muted"></span>
+      <span id="clusterHint" class="muted" style="margin-left:8px;">Groups landings within N minutes into one event.</span>
     </div>
   </div>
 
   <h2>Distribution of Landing Rates (VS fpm)</h2>
+  {% if landings|length == 0 %}
+    <div class="muted">No data yet</div>
+  {% endif %}
   <canvas id="hist"></canvas>
 
   <h2>Average VS per Aircraft</h2>
+  {% if landings|length == 0 %}
+    <div class="muted">No data yet</div>
+  {% endif %}
   <canvas id="avgByAc"></canvas>
 
   <h2>Overrides</h2>
   <div class="card" id="overridesPanel">
     <div class="row" style="justify-content: space-between; align-items: center;">
-      <div class="muted">Manual links set for landings</div>
+      <div class="row" style="align-items:center; gap:8px;">
+        <button class="btn ghost" id="toggleOverrides" type="button">View overrides (0)</button>
+        <span class="muted">Manual links set for landings</span>
+      </div>
       <div>
         <button class="btn ghost" id="refreshOverrides" type="button">Refresh</button>
         <button class="btn" id="clearAllOverrides" type="button">Clear All</button>
       </div>
     </div>
-    <table style="margin-top:8px;">
-      <thead>
-        <tr>
-          <th>Landing #</th>
-          <th>Time</th>
-          <th>Aircraft</th>
-          <th>Flight #</th>
-          <th>Route</th>
-          <th>Actions</th>
-        </tr>
-      </thead>
-      <tbody id="overridesTbody"></tbody>
-    </table>
+    <div id="overridesBody" style="margin-top:8px; display:none;">
+      <table>
+        <thead>
+          <tr>
+            <th>Landing #</th>
+            <th>Time</th>
+            <th>Aircraft</th>
+            <th>Flight #</th>
+            <th>Route</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="overridesTbody"></tbody>
+      </table>
+    </div>
   </div>
 
   <h2>Recent Landings</h2>
+  {% if landings|length == 0 %}
+  <div class="card" role="status" aria-live="polite" style="margin:12px 0;">
+    <div style="font-weight:600;">No landing rates yet</div>
+    <div class="muted">Choose a LandingRate source or upload a LandingRate.log to get started.</div>
+  </div>
+  {% endif %}
   <div class="row" style="margin: 8px 0; align-items: center;">
     <input id="landingSearch" type="search" placeholder="Search by date or aircraft…" aria-label="Search landings" style="flex:1; padding:8px; border:1px solid var(--border); border-radius:6px; background: var(--bg); color: var(--text);" />
     <div id="landingPager" class="row" style="margin-left:auto;">

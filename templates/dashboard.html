@@ -21,16 +21,43 @@
   <p>Currently viewing: <strong id="currentFilename">{{ filename }}</strong></p>
   <p>Total Flight Hours: <strong id="totalHours">{{ "%.1f"|format(data.total_hours) }}</strong> hrs</p>
 
+  {% if flights|length == 0 %}
+  <div class="card" role="status" aria-live="polite" style="margin:12px 0;">
+    <div class="row" style="justify-content: space-between; align-items:center;">
+      <div>
+        <div style="font-weight:600;">No flights yet</div>
+        <div class="muted">Choose your X-Plane logbook folder or upload a logbook file to get started.</div>
+      </div>
+      <div class="row">
+        <button class="btn" type="button" onclick="chooseFolder()">Choose folder</button>
+        <a class="btn ghost" href="#upload-start" onclick="document.getElementById('logfileInput').focus()">Upload logbook</a>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
   <h2>Hours per Aircraft</h2>
+  {% if flights|length == 0 %}
+    <div class="muted">No data yet</div>
+  {% endif %}
   <canvas id="hoursByAircraft"></canvas>
 
   <h2>Flights per Aircraft</h2>
+  {% if flights|length == 0 %}
+    <div class="muted">No data yet</div>
+  {% endif %}
   <canvas id="countByAircraft"></canvas>
 
   <h2>Flights per Route</h2>
+  {% if flights|length == 0 %}
+    <div class="muted">No data yet</div>
+  {% endif %}
   <canvas id="routesChart"></canvas>
 
   <h2>Flight Hours Over Time</h2>
+  {% if flights|length == 0 %}
+    <div class="muted">No data yet</div>
+  {% endif %}
   <canvas id="hoursOverTime"></canvas>
 
   <h2>Flight Log</h2>

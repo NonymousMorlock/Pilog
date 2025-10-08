@@ -434,8 +434,10 @@
   // Overrides panel logic
   function renderOverrides(items) {
     const tbody = document.getElementById('overridesTbody');
+    const toggle = document.getElementById('toggleOverrides');
     if (!tbody) return;
     tbody.innerHTML = '';
+    if (toggle) toggle.textContent = `View overrides (${(items && items.length) || 0})`;
     if (!items || !items.length) {
       const tr = document.createElement('tr');
       const td = document.createElement('td');
@@ -477,6 +479,8 @@
     loadOverrides();
     const refresh = document.getElementById('refreshOverrides');
     const clearAll = document.getElementById('clearAllOverrides');
+    const toggle = document.getElementById('toggleOverrides');
+    const body = document.getElementById('overridesBody');
     if (refresh) refresh.onclick = () => loadOverrides();
     if (clearAll) clearAll.onclick = () => {
       const fd = new FormData();
@@ -489,6 +493,7 @@
           loadOverrides();
         });
     };
+    if (toggle && body) toggle.onclick = () => { body.style.display = (body.style.display === 'none') ? 'block' : 'none'; };
     const tbody = document.getElementById('overridesTbody');
     if (tbody) tbody.addEventListener('click', (e) => {
       const btn = e.target.closest('[data-clear-one]');

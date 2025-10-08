@@ -35,12 +35,14 @@
   }
 
   function createChart(id, type, labels, values, color, opts) {
+    const el = document.getElementById(id);
+    if (!el) return;
     if (charts[id]) { try { charts[id].destroy(); } catch(_) {} }
     const horizontal = opts && opts.horizontal;
     const xTitle = opts && opts.xTitle ? String(opts.xTitle) : '';
     const yTitle = opts && opts.yTitle ? String(opts.yTitle) : '';
     const datasetLabel = opts && opts.datasetLabel ? String(opts.datasetLabel) : '';
-    charts[id] = new Chart(document.getElementById(id), {
+    charts[id] = new Chart(el, {
       type: type,
       data: { labels, datasets: [{ label: datasetLabel, data: values, backgroundColor: color, borderColor: color, fill: type === 'line' ? false : true }] },
       options: {
