@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <title>Pilog</title>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
   <style>
     body {
       font-family: "Inter", sans-serif;
@@ -57,8 +58,8 @@
     <button type="submit">Upload</button>
   </form>
 
-  <p>Currently viewing: <strong>{{ filename }}</strong></p>
-  <p>Total Flight Hours: <strong>{{ "%.1f"|format(data.total_hours) }}</strong> hrs</p>
+  <p>Currently viewing: <strong id="currentFilename">{{ filename }}</strong></p>
+  <p>Total Flight Hours: <strong id="totalHours">{{ "%.1f"|format(data.total_hours) }}</strong> hrs</p>
 
   <h2>Hours per Aircraft</h2>
   <canvas id="hoursByAircraft"></canvas>
@@ -79,7 +80,7 @@
         <th>Date</th><th>From</th><th>To</th><th>Hours</th><th>Aircraft</th><th>Tail</th>
       </tr>
     </thead>
-    <tbody>
+    <tbody id="flightTableBody">
       {% for f in flights %}
       <tr>
         <td>{{ f.date }}</td>
@@ -92,13 +93,10 @@
       {% endfor %}
     </tbody>
   </table>
-
+  <script id="initialData" type="application/json">{{ data|tojson }}</script>
   <script>
-    const data = {{ data|tojson }};
-    const baseline = {
-      totalHours: data.total_hours,
-      flightsCount: {{ flights|length }}
-    };
+    const charts = {};
+    const initialData = JSON.parse(document.getElementById('initialData').textContent);
 
     async function chooseFolder() {
       try {
@@ -117,55 +115,97 @@
           return;
         }
         document.getElementById('watchedFolder').textContent = json.folder_path;
-        // Reload once to reflect the latest parsed data
-        location.reload();
+        const dres = await fetch('/data');
+        const djson = await dres.json();
+        if (djson && djson.summary) {
+          renderFromSummary(djson.summary);
+        }
       } catch (e) {
         alert('Error choosing folder: ' + e);
       }
     }
     const createChart = (id, type, labels, values, color, horizontal=false) => {
-      new Chart(document.getElementById(id), {
+      if (charts[id]) { try { charts[id].destroy(); } catch(_) {} }
+      charts[id] = new Chart(document.getElementById(id), {
         type: type,
         data: { labels, datasets: [{ label: id, data: values, backgroundColor: color }] },
         options: { indexAxis: horizontal ? 'y' : 'x', plugins: { legend: { display: false } } }
       });
     };
+    function esc(s) {
+      return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
 
-    createChart("hoursByAircraft", "bar", Object.keys(data.flights_by_aircraft), Object.values(data.flights_by_aircraft), "#58a6ff");
-    createChart("countByAircraft", "bar", Object.keys(data.count_by_aircraft), Object.values(data.count_by_aircraft), "#f39c12");
-    createChart("routesChart", "bar", Object.keys(data.flights_by_route), Object.values(data.flights_by_route), "#2ecc71", true);
+    const renderFlightTable = (flights) => {
+      try {
+        const tbody = document.getElementById('flightTableBody');
+        if (!tbody || !Array.isArray(flights)) return;
+        tbody.innerHTML = '';
+        for (const f of flights) {
+          const tr = document.createElement('tr');
+          tr.innerHTML = `
+            <td>${esc(f.date)}</td>
+            <td>${esc(f.dep)}</td>
+            <td>${esc(f.arr)}</td>
+            <td>${(Number(f.hours) || 0).toFixed(1)}</td>
+            <td>${esc(f.aircraft)}</td>
+            <td>${esc(f.tail)}</td>
+          `;
+          tbody.appendChild(tr);
+        }
+      } catch(_) {}
+    };
 
-    new Chart(document.getElementById("hoursOverTime"), {
-      type: "line",
-      data: {
-        labels: Object.keys(data.flights_by_date),
-        datasets: [{
-          label: "Hours Flown",
-          data: Object.values(data.flights_by_date),
-          borderColor: "#e74c3c",
-          fill: false
-        }]
-      },
-      options: { scales: { y: { beginAtZero: true } } }
-    });
+    const renderFromSummary = (summary) => {
+      // Update header figures
+      const hours = (Number(summary.total_hours) || 0).toFixed(1);
+      const hoursEl = document.getElementById('totalHours');
+      if (hoursEl) hoursEl.textContent = hours;
+      createChart("hoursByAircraft", "bar", Object.keys(summary.flights_by_aircraft), Object.values(summary.flights_by_aircraft), "#58a6ff");
+      createChart("countByAircraft", "bar", Object.keys(summary.count_by_aircraft), Object.values(summary.count_by_aircraft), "#f39c12");
+      createChart("routesChart", "bar", Object.keys(summary.flights_by_route), Object.values(summary.flights_by_route), "#2ecc71", true);
+      if (charts["hoursOverTime"]) { try { charts["hoursOverTime"].destroy(); } catch(_) {} }
+      charts["hoursOverTime"] = new Chart(document.getElementById("hoursOverTime"), {
+        type: "line",
+        data: {
+          labels: Object.keys(summary.flights_by_date),
+          datasets: [{
+            label: "Hours Flown",
+            data: Object.values(summary.flights_by_date),
+            borderColor: "#e74c3c",
+            fill: false
+          }]
+        },
+        options: { scales: { y: { beginAtZero: true } } }
+      });
+    };
 
-    // Lightweight auto-refresh: if totals change on the server (watcher update), reload
-    (function autoRefresh() {
-      async function tick() {
-        try {
-          const res = await fetch('/data');
-          const json = await res.json();
-          const currentHours = json.summary ? json.summary.total_hours : 0;
-          const currentFlights = json.flights ? json.flights.length : 0;
-          if (Math.abs(currentHours - baseline.totalHours) > 1e-6 || currentFlights !== baseline.flightsCount) {
-            location.reload();
-            return;
-          }
-        } catch(_) {}
-        setTimeout(tick, 10000);
+    // Initial render from server-rendered data
+    renderFromSummary(initialData);
+
+    // Live updates via Socket.IO
+    const socket = io();
+    socket.on('log_update', (payload) => {
+      if (payload && payload.summary) {
+        renderFromSummary(payload.summary);
       }
-      setTimeout(tick, 10000);
-    })();
+      if (payload && payload.flights) {
+        renderFlightTable(payload.flights);
+      }
+      if (payload && payload.filename) {
+        const fnEl = document.getElementById('currentFilename');
+        if (fnEl) fnEl.textContent = payload.filename;
+      }
+      if (payload && payload.watched_folder) {
+        const wfEl = document.getElementById('watchedFolder');
+        if (wfEl) wfEl.textContent = payload.watched_folder;
+      }
+    });
   </script>
 </body>
 </html>

@@ -5,6 +5,7 @@ from collections import defaultdict
 from datetime import datetime
 
 from flask import Flask, render_template, request, jsonify
+from flask_socketio import SocketIO
 
 try:
     from tkinter import Tk, filedialog
@@ -17,6 +18,7 @@ from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
 app = Flask(__name__)
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
 
 app.config['UPLOAD_FOLDER'] = tempfile.gettempdir()
 app.config['MAX_CONTENT_LENGTH'] = 2 * 1024 * 1024  # 2MB limit
@@ -41,7 +43,6 @@ def _persist_watched_folder(path):
             f.write(path or "")
     except Exception as e:
         print('Failed to persist watched folder:', e)
-        pass
 
 
 def _load_persisted_watched_folder():
@@ -91,7 +92,12 @@ def parse_logbook(file_path):
 
 
 def get_current_flights():
-    global cached_flights
+    global cached_flights, watched_folder
+    # Prefer the actively watched folder if set
+    if watched_folder:
+        watched_path = os.path.join(watched_folder, LOGBOOK_FILENAME)
+        if os.path.exists(watched_path):
+            return parse_logbook(watched_path)
     if cached_flights is not None:
         return cached_flights
     return parse_logbook(DEFAULT_LOG_FILE)
@@ -105,6 +111,28 @@ class LogbookHandler(FileSystemEventHandler):
         if os.path.basename(event.src_path) == LOGBOOK_FILENAME:
             cached_flights = parse_logbook(event.src_path)
             cached_filename = os.path.basename(event.src_path)
+            broadcast_update()
+
+    def on_created(self, event):
+        # Some editors write by creating a new file and replacing the old
+        if event.is_directory:
+            return
+        if os.path.basename(event.src_path) == LOGBOOK_FILENAME:
+            self.on_modified(event)
+
+    def on_moved(self, event):
+        # X-Plane or OS may move/replace the file atomically
+        try:
+            dest_path = getattr(event, 'dest_path', None)
+        except Exception:
+            dest_path = None
+        path = dest_path or event.src_path
+        if os.path.basename(path) == LOGBOOK_FILENAME:
+            class E:  # minimal shim with required attrs
+                is_directory = False
+                src_path = path
+
+            self.on_modified(E)
 
 
 def start_watcher(folder_path):
@@ -115,7 +143,6 @@ def start_watcher(folder_path):
             observer.join(timeout=2)
         except Exception as e:
             print('Failed to stop existing observer:', e)
-            pass
         observer = None
 
     handler = LogbookHandler()
@@ -123,6 +150,20 @@ def start_watcher(folder_path):
     observer.schedule(handler, folder_path, recursive=False)
     thread = threading.Thread(target=observer.start, daemon=True)
     thread.start()
+
+
+def broadcast_update():
+    try:
+        flights = get_current_flights()
+        payload = {
+            "summary": summarise_flights(flights),
+            "flights": flights,
+            "filename": cached_filename or DEFAULT_LOGBOOK_NAME,
+            "watched_folder": watched_folder,
+        }
+        socketio.emit("log_update", payload)
+    except Exception as e:
+        print('Failed to broadcast update:', e)
 
 
 @app.route("/pick_folder", methods=["POST"])
@@ -203,6 +244,7 @@ def dashboard():
             filename = uploaded_file.filename
             cached_flights = parse_logbook(temp_path)
             cached_filename = filename
+            broadcast_update()
 
     flights = get_current_flights()
     data = summarise_flights(flights)
@@ -227,7 +269,8 @@ def set_folder():
     cached_flights = parse_logbook(logbook_path)
     cached_filename = os.path.basename(logbook_path)
     start_watcher(watched_folder)
-
+    print(f"Watching folder set to: {watched_folder}")
+    broadcast_update()
     return jsonify({"message": f"Watching {watched_folder}"})
 
 
@@ -244,4 +287,4 @@ def get_data():
 
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    socketio.run(app, debug=True)
