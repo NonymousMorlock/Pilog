@@ -78,6 +78,11 @@
   <canvas id="hoursOverTime"></canvas>
 
   <h2>Flight Log</h2>
+  <div id="flightPager" style="margin: 8px 0; display: flex; align-items: center; gap: 8px;">
+    <button id="prevFlightPage" type="button">Prev</button>
+    <span id="flightPageInfo" style="color:#8b949e;">Page 1</span>
+    <button id="nextFlightPage" type="button">Next</button>
+  </div>
   <table>
     <thead>
       <tr>
@@ -109,9 +114,17 @@
     </tbody>
   </table>
   <script id="initialData" type="application/json">{{ data|tojson }}</script>
+  <script id="initialFlights" type="application/json">{{ flights|tojson }}</script>
+  <script id="initialLandingIndexMap" type="application/json">{{ landing_index_for_flight|tojson if landing_index_for_flight else '[]' }}</script>
+  <script id="initialLandingAvailable" type="application/json">{{ 'true' if landing_available else 'false' }}</script>
   <script>
     const charts = {};
     const initialData = JSON.parse(document.getElementById('initialData').textContent);
+    let allFlights = JSON.parse(document.getElementById('initialFlights').textContent || '[]');
+    let landingIdxMap = JSON.parse(document.getElementById('initialLandingIndexMap').textContent || '[]');
+    let landingAvailable = (document.getElementById('initialLandingAvailable').textContent === 'true');
+    let flightPage = 0;
+    const flightPageSize = 25;
 
     async function chooseFolder() {
       try {
@@ -161,8 +174,20 @@
         const tbody = document.getElementById('flightTableBody');
         if (!tbody || !Array.isArray(flights)) return;
         tbody.innerHTML = '';
-        for (const f of flights) {
+        const start = flightPage * flightPageSize;
+        const end = Math.min(start + flightPageSize, flights.length);
+        const pageFlights = flights.slice(start, end);
+        for (let i = 0; i < pageFlights.length; i++) {
+          const globalIdx = start + i;
+          const f = pageFlights[i];
           const tr = document.createElement('tr');
+          tr.id = 'flight-row-' + globalIdx;
+          let linkCell = '';
+          if (landingAvailable) {
+            const li = Array.isArray(landingIdxMap) ? landingIdxMap[globalIdx] : null;
+            const href = `/landing-rates?date=${encodeURIComponent(f.date)}&aircraft=${encodeURIComponent(f.aircraft)}${li != null ? ('&landingIndex=' + li) : ''}`;
+            linkCell = `<td><a href="${href}" style="color:#58a6ff;">View</a></td>`;
+          }
           tr.innerHTML = `
             <td>${esc(f.date)}</td>
             <td>${esc(f.dep)}</td>
@@ -170,8 +195,14 @@
             <td>${(Number(f.hours) || 0).toFixed(1)}</td>
             <td>${esc(f.aircraft)}</td>
             <td>${esc(f.tail)}</td>
+            ${linkCell}
           `;
           tbody.appendChild(tr);
+        }
+        const info = document.getElementById('flightPageInfo');
+        if (info) {
+          const totalPages = Math.max(1, Math.ceil(flights.length / flightPageSize));
+          info.textContent = `Page ${Math.min(flightPage + 1, totalPages)} of ${totalPages}`;
         }
       } catch(_) {}
     };
@@ -202,6 +233,14 @@
 
     // Initial render from server-rendered data
     renderFromSummary(initialData);
+    // Initial client-side table render with pagination
+    renderFlightTable(allFlights);
+
+    document.getElementById('prevFlightPage').onclick = () => { if (flightPage > 0) { flightPage--; renderFlightTable(allFlights); } };
+    document.getElementById('nextFlightPage').onclick = () => {
+      const totalPages = Math.max(1, Math.ceil(allFlights.length / flightPageSize));
+      if (flightPage + 1 < totalPages) { flightPage++; renderFlightTable(allFlights); }
+    };
 
     // Live updates via Socket.IO
     const socket = io();
@@ -210,7 +249,13 @@
         renderFromSummary(payload.summary);
       }
       if (payload && payload.flights) {
-        renderFlightTable(payload.flights);
+        allFlights = payload.flights || [];
+        if (Array.isArray(payload.landing_index_for_flight)) landingIdxMap = payload.landing_index_for_flight;
+        if (typeof payload.landing_available === 'boolean') landingAvailable = payload.landing_available;
+        // Keep current page in range
+        const totalPages = Math.max(1, Math.ceil(allFlights.length / flightPageSize));
+        if (flightPage >= totalPages) flightPage = totalPages - 1;
+        renderFlightTable(allFlights);
       }
       if (payload && payload.filename) {
         const fnEl = document.getElementById('currentFilename');
@@ -226,16 +271,14 @@
     (function() {
       const params = new URLSearchParams(window.location.search);
       const idxStr = params.get('flightIndex');
-      if (!idxStr) return;
+      if (!idxStr) { return; }
       const idx = Number(idxStr);
-      if (!Number.isFinite(idx)) return;
-      const tbody = document.getElementById('flightTableBody');
-      if (!tbody) return;
-      const row = tbody.children[idx];
-      if (row) {
-        row.style.outline = '2px solid #58a6ff';
-        row.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      }
+      if (!Number.isFinite(idx)) { return; }
+      // Navigate to the page that contains this index
+      flightPage = Math.floor(idx / flightPageSize);
+      renderFlightTable(allFlights);
+      const row = document.getElementById('flight-row-' + idx);
+      if (row) { row.style.outline = '2px solid #58a6ff'; row.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
     })();
   </script>
 </body>

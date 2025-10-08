@@ -58,6 +58,11 @@
   <canvas id="avgByAc"></canvas>
 
   <h2>Recent Landings</h2>
+  <div id="landingPager" style="margin: 8px 0; display: flex; align-items: center; gap: 8px;">
+    <button id="prevLandingPage" type="button">Prev</button>
+    <span id="landingPageInfo" style="color:#8b949e;">Page 1</span>
+    <button id="nextLandingPage" type="button">Next</button>
+  </div>
   <table>
     <thead>
       <tr>
@@ -76,6 +81,10 @@
 
   <script>
     const charts = {};
+    let allLandings = [];
+    let allLinks = {};
+    let landingPage = 0;
+    const landingPageSize = 50;
     function createChart(id, type, labels, values, color, horizontal=false) {
       if (charts[id]) { try { charts[id].destroy(); } catch(_) {} }
       charts[id] = new Chart(document.getElementById(id), {
@@ -95,7 +104,9 @@
     function renderTable(landings, links) {
       const tbody = document.getElementById('landingTbody');
       tbody.innerHTML = '';
-      for (let i = 0; i < landings.length; i++) {
+      const start = landingPage * landingPageSize;
+      const end = Math.min(start + landingPageSize, landings.length);
+      for (let i = start; i < end; i++) {
         const l = landings[i];
         const link = links && links[i];
         const tr = document.createElement('tr');
@@ -168,10 +179,10 @@
     }
 
     const initialSummary = JSON.parse(document.getElementById('initialSummary').textContent || '{}');
-    const initialLandings = JSON.parse(document.getElementById('initialLandings').textContent || '[]');
-    const initialLinks = JSON.parse(document.getElementById('initialLinks').textContent || '{}');
-    renderSummary(initialSummary, initialLandings);
-    renderTable(initialLandings, initialLinks || {});
+    allLandings = JSON.parse(document.getElementById('initialLandings').textContent || '[]');
+    allLinks = JSON.parse(document.getElementById('initialLinks').textContent || '{}');
+    renderSummary(initialSummary, allLandings);
+    renderTable(allLandings, allLinks || {});
     // Initial deep-link highlight (works before any socket update)
     (function() {
       const params = new URLSearchParams(window.location.search);
@@ -204,13 +215,21 @@
         if (payload.source.file) document.getElementById('srcFile').textContent = payload.source.file || '';
       }
       if (payload.summary && payload.landings) {
-        renderSummary(payload.summary, payload.landings);
-        renderTable(payload.landings, payload.links || {});
+        allLandings = payload.landings;
+        allLinks = payload.links || {};
+        renderSummary(payload.summary, allLandings);
+        // Keep landing page index valid
+        const totalPages = Math.max(1, Math.ceil(allLandings.length / landingPageSize));
+        if (landingPage >= totalPages) landingPage = totalPages - 1;
+        renderTable(allLandings, allLinks);
         // Deep-link highlight: landingIndex takes precedence
         const params = new URLSearchParams(window.location.search);
         const qIndex = params.get('landingIndex');
         if (qIndex != null) {
-          const row = document.getElementById('landing-row-' + Number(qIndex));
+          const idx = Number(qIndex);
+          landingPage = Math.floor(idx / landingPageSize);
+          renderTable(allLandings, allLinks);
+          const row = document.getElementById('landing-row-' + idx);
           if (row) {
             row.classList.add('hl');
             row.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -236,6 +255,13 @@
         }
       }
     });
+
+    // Pager buttons
+    document.getElementById('prevLandingPage').onclick = () => { if (landingPage > 0) { landingPage--; renderTable(allLandings, allLinks); const info = document.getElementById('landingPageInfo'); if (info) { const totalPages = Math.max(1, Math.ceil(allLandings.length / landingPageSize)); info.textContent = `Page ${Math.min(landingPage + 1, totalPages)} of ${totalPages}`; } } };
+    document.getElementById('nextLandingPage').onclick = () => { const totalPages = Math.max(1, Math.ceil(allLandings.length / landingPageSize)); if (landingPage + 1 < totalPages) { landingPage++; renderTable(allLandings, allLinks); const info = document.getElementById('landingPageInfo'); if (info) { info.textContent = `Page ${Math.min(landingPage + 1, totalPages)} of ${totalPages}`; } } };
+
+    // Update pager info initially
+    (function(){ const info = document.getElementById('landingPageInfo'); if (info) { const totalPages = Math.max(1, Math.ceil(allLandings.length / landingPageSize)); info.textContent = `Page ${Math.min(landingPage + 1, totalPages)} of ${totalPages}`; } })();
   </script>
 </body>
 </html>
