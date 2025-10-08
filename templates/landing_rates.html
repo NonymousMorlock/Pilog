@@ -27,6 +27,30 @@
   <h2>Average VS per Aircraft</h2>
   <canvas id="avgByAc"></canvas>
 
+  <h2>Overrides</h2>
+  <div class="card" id="overridesPanel">
+    <div class="row" style="justify-content: space-between; align-items: center;">
+      <div class="muted">Manual links set for landings</div>
+      <div>
+        <button class="btn ghost" id="refreshOverrides" type="button">Refresh</button>
+        <button class="btn" id="clearAllOverrides" type="button">Clear All</button>
+      </div>
+    </div>
+    <table style="margin-top:8px;">
+      <thead>
+        <tr>
+          <th>Landing #</th>
+          <th>Time</th>
+          <th>Aircraft</th>
+          <th>Flight #</th>
+          <th>Route</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody id="overridesTbody"></tbody>
+    </table>
+  </div>
+
   <h2>Recent Landings</h2>
   <div class="row" style="margin: 8px 0; align-items: center;">
     <input id="landingSearch" type="search" placeholder="Search by date or aircraft…" aria-label="Search landings" style="flex:1; padding:8px; border:1px solid var(--border); border-radius:6px; background: var(--bg); color: var(--text);" />

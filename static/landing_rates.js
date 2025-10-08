@@ -401,6 +401,81 @@
     });
   })();
 
+  // Overrides panel logic
+  function renderOverrides(items) {
+    const tbody = document.getElementById('overridesTbody');
+    if (!tbody) return;
+    tbody.innerHTML = '';
+    if (!items || !items.length) {
+      const tr = document.createElement('tr');
+      const td = document.createElement('td');
+      td.colSpan = 6;
+      td.className = 'muted';
+      td.textContent = 'No manual overrides set.';
+      tr.appendChild(td);
+      tbody.appendChild(tr);
+      return;
+    }
+    for (const it of items) {
+      const l = it.landing || {};
+      const f = it.flight || {};
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td>${it.landing_index}</td>
+        <td>${esc(l.time || '')}</td>
+        <td>${esc(l.norm_ac || l.aircraft || '')}</td>
+        <td>${it.flight_index}</td>
+        <td>${esc(f.dep || '')}→${esc(f.arr || '')}</td>
+        <td>
+          <button class="btn ghost" data-clear-one="${it.landing_index}">Clear</button>
+          <a class="btn" href="/?date=${encodeURIComponent(f.date || '')}${it.flight_index != null ? ('&flightIndex=' + it.flight_index) : ''}">Open flight</a>
+        </td>
+      `;
+      tbody.appendChild(tr);
+    }
+  }
+
+  function loadOverrides() {
+    fetch('/links/list').then(r => r.json()).then(j => {
+      renderOverrides((j && j.overrides) || []);
+    }).catch(() => {});
+  }
+
+  (function initOverridesPanel(){
+    const panel = document.getElementById('overridesPanel');
+    if (!panel) return;
+    loadOverrides();
+    const refresh = document.getElementById('refreshOverrides');
+    const clearAll = document.getElementById('clearAllOverrides');
+    if (refresh) refresh.onclick = () => loadOverrides();
+    if (clearAll) clearAll.onclick = () => {
+      const fd = new FormData();
+      // No landing_index -> clear all
+      fetch('/links/clear', { method: 'POST', body: fd })
+        .then(r => r.json().then(j => ({ ok: r.ok, j })))
+        .then(({ ok, j }) => {
+          if (!ok) { showToast(j && j.error || 'Failed to clear', 'error'); return; }
+          showToast('Cleared all overrides', 'success');
+          loadOverrides();
+        });
+    };
+    const tbody = document.getElementById('overridesTbody');
+    if (tbody) tbody.addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-clear-one]');
+      if (!btn) return;
+      const li = btn.getAttribute('data-clear-one');
+      const fd = new FormData();
+      fd.append('landing_index', String(li));
+      fetch('/links/clear', { method: 'POST', body: fd })
+        .then(r => r.json().then(j => ({ ok: r.ok, j })))
+        .then(({ ok, j }) => {
+          if (!ok) { showToast(j && j.error || 'Failed to clear', 'error'); return; }
+          showToast('Cleared override', 'success');
+          loadOverrides();
+        });
+    });
+  })();
+
   // Search
   (function(){
     const input = document.getElementById('landingSearch');

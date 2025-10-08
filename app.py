@@ -782,6 +782,38 @@ def candidates_for_landing():
     return jsonify({"candidates": same_group})
 
 
+@app.route("/links/list", methods=["GET"])
+def list_overrides():
+    flights = get_current_flights()
+    landings = cached_landings or []
+    items = []
+    for li, fi in (manual_overrides or {}).items():
+        landing = landings[li] if 0 <= li < len(landings) else None
+        flight = flights[fi] if 0 <= fi < len(flights) else None
+        items.append({"landing_index": li, "flight_index": fi, "landing": landing, "flight": flight})
+    return jsonify({"overrides": items})
+
+
+@app.route("/links/clear", methods=["POST"])
+def clear_override():
+    global manual_overrides
+    li_raw = request.form.get("landing_index", "").strip()
+    if li_raw:
+        try:
+            li = int(li_raw)
+        except Exception:
+            return jsonify({"error": "Invalid landing_index"}), 400
+        if li in manual_overrides:
+            manual_overrides.pop(li, None)
+    else:
+        # Clear all
+        manual_overrides = {}
+    _persist_manual_links(manual_overrides)
+    recompute_links()
+    broadcast_landing_update()
+    return jsonify({"message": "Cleared"})
+
+
 @app.route("/pick_landing_rate_folder", methods=["POST"])
 def pick_landing_rate_folder():
     if not TKINTER_AVAILABLE:
