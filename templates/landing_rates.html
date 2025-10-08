@@ -105,7 +105,7 @@
         let linkHtml = '<span class="chip muted">unlinked</span>';
         if (link && link.linkConfidence && link.linkConfidence !== 'unmatched' && link.linkConfidence !== 'ambiguous' && link.flight) {
           const f = link.flight;
-          const href = '/?date=' + encodeURIComponent(f.date);
+          const href = '/?date=' + encodeURIComponent(f.date) + (link.flightIndex != null ? ('&flightIndex=' + link.flightIndex) : '');
           const badge = link.linkConfidence === 'sequence-assumed' ? 'chip warn' : 'chip ok';
           linkHtml = `<a class="${badge}" href="${href}">View flight ${esc(f.dep)}→${esc(f.arr)}</a>`;
         } else if (link && link.linkConfidence) {
@@ -172,6 +172,29 @@
     const initialLinks = JSON.parse(document.getElementById('initialLinks').textContent || '{}');
     renderSummary(initialSummary, initialLandings);
     renderTable(initialLandings, initialLinks || {});
+    // Initial deep-link highlight (works before any socket update)
+    (function() {
+      const params = new URLSearchParams(window.location.search);
+      const qIndex = params.get('landingIndex');
+      if (qIndex != null) {
+        const row = document.getElementById('landing-row-' + Number(qIndex));
+        if (row) { row.classList.add('hl'); row.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
+        return;
+      }
+      const qDate = params.get('date');
+      const qAc = (params.get('aircraft') || '').toUpperCase();
+      if (qDate && qAc) {
+        for (let i = 0; i < initialLandings.length; i++) {
+          const l = initialLandings[i];
+          const ac = ((l.norm_ac || l.aircraft) || '').toUpperCase();
+          if (l.date === qDate && ac === qAc) {
+            const row = document.getElementById('landing-row-' + i);
+            if (row) { row.classList.add('hl'); row.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
+            break;
+          }
+        }
+      }
+    })();
 
     const socket = io();
     socket.on('landing_rate_update', (payload) => {

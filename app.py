@@ -342,11 +342,26 @@ def start_landing_rate_watcher(folder_path):
 def broadcast_update():
     try:
         flights = get_current_flights()
+        # Prepare landing mapping for dashboard consumers
+        landing_idx_for_flight = []
+        landing_avail = False
+        try:
+            recompute_links()
+            landing_avail = bool((landing_rate_path or landing_watched_folder) or (cached_landings and len(cached_landings) > 0))
+            for i, _ in enumerate(flights):
+                indices = flight_to_landing_indices.get(i) if 'flight_to_landing_indices' in globals() else None
+                landing_idx_for_flight.append(indices[0] if indices else None)
+        except Exception as e:
+            print('Failed to compute landing indices for broadcast:', e)
+            landing_idx_for_flight = [None] * len(flights)
+            landing_avail = False
         payload = {
             "summary": summarise_flights(flights),
             "flights": flights,
             "filename": cached_filename or DEFAULT_LOGBOOK_NAME,
             "watched_folder": watched_folder,
+            "landing_index_for_flight": landing_idx_for_flight,
+            "landing_available": landing_avail,
         }
         socketio.emit("log_update", payload)
     except Exception as e:
@@ -405,7 +420,7 @@ def recompute_links():
         if lf == 1 and ll == 1:
             fref = flights_list[0]
             item = landing_list[0]
-            landing_links[item["idx"]] = {"flight": fref["flight"], "linkConfidence": "unique-date-aircraft"}
+            landing_links[item["idx"]] = {"flight": fref["flight"], "flightIndex": fref["idx"], "linkConfidence": "unique-date-aircraft"}
             flight_key = (fref["flight"]["date"], fref["flight"]["norm_ac"], 0)
             flight_link_index_by_key.setdefault(flight_key, []).append(item["idx"])
             flight_to_landing_indices.setdefault(fref["idx"], []).append(item["idx"])
@@ -413,7 +428,7 @@ def recompute_links():
         if lf == ll and lf > 0:
             for i, item in enumerate(landing_list):
                 fref = flights_list[i]
-                landing_links[item["idx"]] = {"flight": fref["flight"], "linkConfidence": "sequence-assumed"}
+                landing_links[item["idx"]] = {"flight": fref["flight"], "flightIndex": fref["idx"], "linkConfidence": "sequence-assumed"}
                 flight_key = (fref["flight"]["date"], fref["flight"]["norm_ac"], i)
                 flight_link_index_by_key.setdefault(flight_key, []).append(item["idx"])
                 flight_to_landing_indices.setdefault(fref["idx"], []).append(item["idx"])

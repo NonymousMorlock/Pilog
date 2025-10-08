@@ -221,6 +221,22 @@
         if (wfEl) wfEl.textContent = payload.watched_folder;
       }
     });
+
+    // Highlight/scroll to a target flight row when deep-linked
+    (function() {
+      const params = new URLSearchParams(window.location.search);
+      const idxStr = params.get('flightIndex');
+      if (!idxStr) return;
+      const idx = Number(idxStr);
+      if (!Number.isFinite(idx)) return;
+      const tbody = document.getElementById('flightTableBody');
+      if (!tbody) return;
+      const row = tbody.children[idx];
+      if (row) {
+        row.style.outline = '2px solid #58a6ff';
+        row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    })();
   </script>
 </body>
 </html>
