@@ -53,6 +53,12 @@ flight_to_landing_indices = {}  # key: global flight idx -> [landing indices]
 # Manual overrides: landing index -> flight index
 manual_overrides = {}
 
+# Heuristic config (in minutes). Can override via env LANDING_CLUSTER_MINUTES
+try:
+    CLUSTER_MINUTES = int(os.getenv('LANDING_CLUSTER_MINUTES', '10'))
+except Exception:
+    CLUSTER_MINUTES = 10
+
 
 def _persist_watched_folder(path):
     try:
@@ -496,7 +502,76 @@ def recompute_links():
                 flight_to_landing_indices.setdefault(fref["idx"], []).append(item["idx"])
             continue
 
-        # Heuristic 2: distribute by declared flight landing counts if totals match
+        # Heuristic 2: cluster landings by short time window, then assign clusters
+        def _parse_dt_safe(s):
+            try:
+                return datetime.strptime(s, "%Y-%m-%d %H:%M:%S")
+            except Exception:
+                try:
+                    return datetime.fromisoformat(str(s).replace("/", "-").replace("T", " "))
+                except Exception:
+                    return None
+        clusters = []  # list[list[item]] where item ∈ working_landings
+        if ll_work > 0:
+            sorted_work = sorted(working_landings, key=lambda x: x["landing"].get("time") or "")
+            current = []
+            last_dt = None
+            for it in sorted_work:
+                tstr = it["landing"].get("time")
+                dt = _parse_dt_safe(tstr)
+                if not current:
+                    current = [it]
+                    last_dt = dt
+                else:
+                    delta_min = None
+                    if last_dt and dt:
+                        try:
+                            delta_min = abs((dt - last_dt).total_seconds()) / 60.0
+                        except Exception:
+                            delta_min = None
+                    if delta_min is not None and delta_min <= CLUSTER_MINUTES:
+                        current.append(it)
+                        last_dt = dt or last_dt
+                    else:
+                        clusters.append(current)
+                        current = [it]
+                        last_dt = dt
+            if current:
+                clusters.append(current)
+
+        if clusters:
+            total_clusters = len(clusters)
+            total_declared = sum(int(max(0, f["flight"].get("landings", 0))) for f in working_flights)
+            # Case A: clusters count matches flights count → sequence by cluster
+            if total_clusters == lf_work and lf_work > 0:
+                for i, cluster in enumerate(clusters):
+                    fref = working_flights[i]
+                    for it in cluster:
+                        landing_links[it["idx"]] = {"flight": fref["flight"], "flightIndex": fref["idx"],
+                                                      "linkConfidence": "cluster-sequence"}
+                        flight_to_landing_indices.setdefault(fref["idx"], []).append(it["idx"])
+                continue
+            # Case B: clusters count matches total declared → distribute by declared counts
+            if total_declared == total_clusters and total_declared > 0:
+                ci = 0
+                for fref in working_flights:
+                    k = int(max(0, fref["flight"].get("landings", 0)))
+                    for _ in range(k):
+                        if ci >= total_clusters:
+                            break
+                        for it in clusters[ci]:
+                            landing_links[it["idx"]] = {"flight": fref["flight"], "flightIndex": fref["idx"],
+                                                          "linkConfidence": "cluster-assigned"}
+                            flight_to_landing_indices.setdefault(fref["idx"], []).append(it["idx"])
+                        ci += 1
+                # Mark any leftover in working_landings that didn't get assigned as ambiguous
+                assigned = {it["idx"] for k in range(min(ci, total_clusters)) for it in clusters[k]}
+                for it in working_landings:
+                    if it["idx"] not in assigned and it["idx"] not in landing_links:
+                        landing_links[it["idx"]] = {"flight": None, "linkConfidence": "ambiguous"}
+                continue
+
+        # Heuristic 3: distribute by declared flight landing counts if totals match (raw landings)
         total_declared = sum(int(max(0, f["flight"].get("landings", 0))) for f in working_flights)
         if ll_work > 0 and total_declared == ll_work and total_declared > 0:
             cursor = 0
