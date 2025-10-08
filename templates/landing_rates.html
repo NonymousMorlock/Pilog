@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Landing Rates</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+  <style>
+    body { font-family: "Inter", sans-serif; margin: 2rem; background: #0d1117; color: #c9d1d9; }
+    h1, h2 { color: #58a6ff; }
+    a { color: #58a6ff; }
+    canvas { margin: 2rem 0; max-width: 900px; }
+    table { border-collapse: collapse; width: 100%; margin-top: 2rem; }
+    th, td { border: 1px solid #30363d; padding: 8px; text-align: left; }
+    th { background: #21262d; }
+    tr:nth-child(even) { background: #161b22; }
+    .chip { padding: 2px 8px; border-radius: 10px; font-size: 12px; }
+    .ok { background: #1f6feb33; color: #58a6ff; }
+    .warn { background: #b0880033; color: #e3b341; }
+    .bad { background: #8b000033; color: #ff7b72; }
+    .controls { border: 2px dashed #30363d; padding: 1rem; border-radius: 12px; margin-bottom: 1rem; background: #161b22; }
+    button { background: #238636; color: white; border: none; padding: 6px 14px; border-radius: 6px; cursor: pointer; }
+    button:hover { background: #2ea043; }
+    .muted { color: #8b949e; }
+    .hl { outline: 2px solid #58a6ff; box-shadow: 0 0 0 2px #58a6ff55; }
+  </style>
+  <script>
+    function esc(s) {
+      return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+  </script>
+  <script id="initialSummary" type="application/json">{{ summary|tojson }}</script>
+  <script id="initialLandings" type="application/json">{{ landings|tojson }}</script>
+</head>
+<body>
+  <h1>🛬 Landing Rates</h1>
+  <p class="muted">Source folder: <span id="srcFolder">{{ source_folder if source_folder else '' }}</span> | Source file: <span id="srcFile">{{ source_file if source_file else '' }}</span></p>
+
+  <div class="controls">
+    <button style="display:block; margin-bottom: 0.8rem;" onclick="chooseLRFolder()">Choose LandingRate folder…</button>
+    <button onclick="chooseLRFile()">Choose LandingRate file…</button>
+    <form id="uploadForm" action="/upload_landing_rate" method="POST" enctype="multipart/form-data" style="display:inline-block; margin-left:8px;">
+      <input type="file" name="landingrate" accept=".log,.csv" required>
+      <button type="submit">Upload</button>
+    </form>
+  </div>
+
+  <h2>Distribution of Landing Rates (VS fpm)</h2>
+  <canvas id="hist"></canvas>
+
+  <h2>Average VS per Aircraft</h2>
+  <canvas id="avgByAc"></canvas>
+
+  <h2>Recent Landings</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Time</th>
+        <th>Aircraft</th>
+        <th>VS (fpm)</th>
+        <th>G</th>
+        <th>Nose rate</th>
+        <th>Float</th>
+        <th>Quality</th>
+        <th>Link</th>
+      </tr>
+    </thead>
+    <tbody id="landingTbody"></tbody>
+  </table>
+
+  <script>
+    const charts = {};
+    function createChart(id, type, labels, values, color, horizontal=false) {
+      if (charts[id]) { try { charts[id].destroy(); } catch(_) {} }
+      charts[id] = new Chart(document.getElementById(id), {
+        type,
+        data: { labels, datasets: [{ label: id, data: values, backgroundColor: color }] },
+        options: { indexAxis: horizontal ? 'y' : 'x', plugins: { legend: { display: false } } }
+      });
+    }
+
+    function bandClass(vs) {
+      if (vs == null || isNaN(vs)) return '';
+      if (vs >= -200) return 'ok';
+      if (vs >= -400) return 'warn';
+      return 'bad';
+    }
+
+    function renderTable(landings, links) {
+      const tbody = document.getElementById('landingTbody');
+      tbody.innerHTML = '';
+      for (let i = 0; i < landings.length; i++) {
+        const l = landings[i];
+        const link = links && links[i];
+        const tr = document.createElement('tr');
+        tr.id = 'landing-row-' + i;
+        const vs = Number(l.VS);
+        const cls = bandClass(vs);
+        let linkHtml = '<span class="chip muted">unlinked</span>';
+        if (link && link.linkConfidence && link.linkConfidence !== 'unmatched' && link.linkConfidence !== 'ambiguous' && link.flight) {
+          const f = link.flight;
+          const href = '/?date=' + encodeURIComponent(f.date);
+          const badge = link.linkConfidence === 'sequence-assumed' ? 'chip warn' : 'chip ok';
+          linkHtml = `<a class="${badge}" href="${href}">View flight ${esc(f.dep)}→${esc(f.arr)}</a>`;
+        } else if (link && link.linkConfidence) {
+          const badge = link.linkConfidence === 'ambiguous' ? 'chip warn' : 'chip bad';
+          linkHtml = `<span class="${badge}">${esc(link.linkConfidence)}</span>`;
+        }
+        tr.innerHTML = `
+          <td>${esc(l.time)}</td>
+          <td>${esc(l.norm_ac || l.aircraft)}</td>
+          <td><span class="chip ${cls}">${isFinite(vs) ? vs.toFixed(1) : ''}</span></td>
+          <td>${l.G != null ? Number(l.G).toFixed(2) : ''}</td>
+          <td>${l.nose_rate != null ? Number(l.nose_rate).toFixed(2) : ''}</td>
+          <td>${l.float != null ? Number(l.float).toFixed(2) : ''}</td>
+          <td>${esc(l.quality || '')}</td>
+          <td>${linkHtml}</td>
+        `;
+        tbody.appendChild(tr);
+      }
+    }
+
+    function renderSummary(summary, landings) {
+      // Histogram: build bins
+      const vs = landings.map(l => Number(l.VS)).filter(v => isFinite(v));
+      const min = Math.min(...vs, -1500), max = Math.max(...vs, -10);
+      const bins = 30;
+      const width = (max - min) / bins || 1;
+      const counts = new Array(bins).fill(0);
+      vs.forEach(v => { const idx = Math.min(bins - 1, Math.max(0, Math.floor((v - min) / width))); counts[idx]++; });
+      const labels = counts.map((_, i) => (min + i * width).toFixed(0));
+      createChart('hist', 'bar', labels, counts, '#58a6ff');
+
+      const avg = summary && summary.avg_vs_per_aircraft ? summary.avg_vs_per_aircraft : {};
+      createChart('avgByAc', 'bar', Object.keys(avg), Object.values(avg), '#f39c12');
+    }
+
+    async function chooseLRFolder() {
+      try {
+        const res = await fetch('/pick_landing_rate_folder', { method: 'POST' });
+        const json = await res.json();
+        if (!res.ok) { alert(json.error || 'Failed to pick folder'); return; }
+        const form = new FormData();
+        form.append('folder_path', json.folder_path);
+        const sres = await fetch('/set_landing_rate_folder', { method: 'POST', body: form });
+        const sjson = await sres.json();
+        if (!sres.ok) { alert(sjson.error || 'Failed to set folder'); return; }
+      } catch (e) { alert('Error: ' + e); }
+    }
+
+    async function chooseLRFile() {
+      try {
+        const res = await fetch('/pick_landing_rate_file', { method: 'POST' });
+        const json = await res.json();
+        if (!res.ok) { alert(json.error || 'Failed to pick file'); return; }
+        const form = new FormData();
+        form.append('file_path', json.file_path);
+        const sres = await fetch('/set_landing_rate_file', { method: 'POST', body: form });
+        const sjson = await sres.json();
+        if (!sres.ok) { alert(sjson.error || 'Failed to set file'); return; }
+      } catch (e) { alert('Error: ' + e); }
+    }
+
+    const initialSummary = JSON.parse(document.getElementById('initialSummary').textContent || '{}');
+    const initialLandings = JSON.parse(document.getElementById('initialLandings').textContent || '[]');
+    renderSummary(initialSummary, initialLandings);
+    renderTable(initialLandings, {});
+
+    const socket = io();
+    socket.on('landing_rate_update', (payload) => {
+      if (!payload) return;
+      if (payload.source) {
+        if (payload.source.folder) document.getElementById('srcFolder').textContent = payload.source.folder || '';
+        if (payload.source.file) document.getElementById('srcFile').textContent = payload.source.file || '';
+      }
+      if (payload.summary && payload.landings) {
+        renderSummary(payload.summary, payload.landings);
+        renderTable(payload.landings, payload.links || {});
+        // Deep-link highlight: landingIndex takes precedence
+        const params = new URLSearchParams(window.location.search);
+        const qIndex = params.get('landingIndex');
+        if (qIndex != null) {
+          const row = document.getElementById('landing-row-' + Number(qIndex));
+          if (row) {
+            row.classList.add('hl');
+            row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            return;
+          }
+        }
+        // Fallback: match by date + aircraft
+        const qDate = params.get('date');
+        const qAc = (params.get('aircraft') || '').toUpperCase();
+        if (qDate && qAc) {
+          for (let i = 0; i < payload.landings.length; i++) {
+            const l = payload.landings[i];
+            const ac = ((l.norm_ac || l.aircraft) || '').toUpperCase();
+            if (l.date === qDate && ac === qAc) {
+              const row = document.getElementById('landing-row-' + i);
+              if (row) {
+                row.classList.add('hl');
+                row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                break;
+              }
+            }
+          }
+        }
+      }
+    });
+  </script>
+</body>
+</html>
+

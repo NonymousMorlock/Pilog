@@ -46,6 +46,10 @@
 <body>
   <h1>🛫 X-Plane Logbook Dashboard</h1>
 
+  <div style="margin: 12px 0;">
+    <a href="/landing-rates" style="background:#30363d; color:#58a6ff; padding:8px 12px; border-radius:8px; text-decoration:none;">Open Landing Rates</a>
+  </div>
+
   <form id="watcherForm" onsubmit="return false;">
     <label for="chooseFolderBtn"><strong>Choose folder to watch (contains X-Plane Pilot.txt):</strong></label>
     <button id="chooseFolderBtn" type="button" onclick="chooseFolder()">Choose Folder…</button>
@@ -77,7 +81,7 @@
   <table>
     <thead>
       <tr>
-        <th>Date</th><th>From</th><th>To</th><th>Hours</th><th>Aircraft</th><th>Tail</th>
+        <th>Date</th><th>From</th><th>To</th><th>Hours</th><th>Aircraft</th><th>Tail</th><th>Landing Rate</th>
       </tr>
     </thead>
     <tbody id="flightTableBody">
@@ -89,6 +93,15 @@
         <td>{{ "%.1f"|format(f.hours) }}</td>
         <td>{{ f.aircraft }}</td>
         <td>{{ f.tail }}</td>
+        <td>
+          {% set li = landing_index_for_flight[loop.index0] %}
+          <a
+            href="/landing-rates?date={{ f.date }}&aircraft={{ f.aircraft }}{% if li is not none %}&landingIndex={{ li }}{% endif %}"
+            style="color:#58a6ff;"
+            title="View landing rate(s) for this flight (if linked)">
+            View
+          </a>
+        </td>
       </tr>
       {% endfor %}
     </tbody>
