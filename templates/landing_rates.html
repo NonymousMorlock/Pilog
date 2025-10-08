@@ -19,6 +19,12 @@
       <input type="file" name="landingrate" accept=".log,.csv" required>
       <button class="btn" type="submit">Upload</button>
     </form>
+    <div class="row" style="margin-top:8px; align-items: center; gap:8px;">
+      <label for="clusterMinutes"><strong>Cluster window (minutes):</strong></label>
+      <input id="clusterMinutes" type="number" min="1" max="60" step="1" value="10" style="width:90px; padding:6px; border:1px solid var(--border); border-radius:6px; background: var(--bg); color: var(--text);">
+      <button class="btn" id="saveCluster" type="button">Save</button>
+      <span id="clusterStatus" class="muted"></span>
+    </div>
   </div>
 
   <h2>Distribution of Landing Rates (VS fpm)</h2>

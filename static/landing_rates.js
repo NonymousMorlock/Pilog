@@ -177,6 +177,36 @@
   renderSummary(initialSummary, allLandings);
   renderTable();
 
+  // Initialize clustering control from live data
+  (function initClusterControl(){
+    // Try to fetch current cluster_minutes from API so the input shows the server value
+    fetch('/landing-rates/data').then(r => r.json()).then(j => {
+      const v = j && j.cluster_minutes;
+      const input = document.getElementById('clusterMinutes');
+      if (input && typeof v === 'number') input.value = String(v);
+    }).catch(() => {});
+    const btn = document.getElementById('saveCluster');
+    if (btn) btn.onclick = () => {
+      const input = document.getElementById('clusterMinutes');
+      const status = document.getElementById('clusterStatus');
+      const minutes = Number(input && input.value);
+      if (!Number.isFinite(minutes) || minutes < 1 || minutes > 60) {
+        showToast('Minutes must be 1-60', 'error');
+        return;
+      }
+      const fd = new FormData();
+      fd.append('minutes', String(minutes));
+      fetch('/config/cluster', { method: 'POST', body: fd })
+        .then(r => r.json().then(j => ({ ok: r.ok, j })))
+        .then(({ ok, j }) => {
+          if (!ok) { showToast(j && j.error || 'Failed to save', 'error'); return; }
+          if (status) status.textContent = `Saved (${j.cluster_minutes} min)`;
+          showToast('Cluster window saved', 'success');
+        })
+        .catch(e => showToast('Error: ' + e, 'error'));
+    };
+  })();
+
   // Deep-link highlight before sockets (persist across refresh)
   (function() {
     const params = new URLSearchParams(window.location.search);

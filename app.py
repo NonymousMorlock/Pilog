@@ -60,6 +60,31 @@ except Exception:
     CLUSTER_MINUTES = 10
 
 
+def _persist_config():
+    try:
+        import json
+        os.makedirs("uploads", exist_ok=True)
+        with open(os.path.join("uploads", "config.json"), "w") as f:
+            json.dump({"cluster_minutes": CLUSTER_MINUTES}, f)
+    except Exception as e:
+        print('Failed to persist config:', e)
+
+
+def _load_config():
+    global CLUSTER_MINUTES
+    path = os.path.join("uploads", "config.json")
+    if os.path.exists(path):
+        try:
+            import json
+            with open(path) as f:
+                data = json.load(f) or {}
+                cm = int(data.get("cluster_minutes", CLUSTER_MINUTES))
+                if 1 <= cm <= 60:
+                    CLUSTER_MINUTES = cm
+        except Exception as e:
+            print('Failed to load config:', e)
+
+
 def _persist_watched_folder(path):
     try:
         os.makedirs("uploads", exist_ok=True)
@@ -692,8 +717,9 @@ def init_watcher_if_configured():
                 landing_watched_folder = "logs"
                 cached_landings = parse_landing_rates(default_candidate)
                 start_landing_rate_watcher(landing_watched_folder)
-        # Load manual overrides
+        # Load config and manual overrides
         try:
+            _load_config()
             global manual_overrides
             manual_overrides = _load_persisted_manual_links()
         except Exception as e:
@@ -817,7 +843,8 @@ def get_landing_data():
         "source": {
             "file": landing_rate_path,
             "folder": landing_watched_folder,
-        }
+        },
+        "cluster_minutes": CLUSTER_MINUTES,
     })
 
 
@@ -887,6 +914,23 @@ def clear_override():
     recompute_links()
     broadcast_landing_update()
     return jsonify({"message": "Cleared"})
+
+
+@app.route("/config/cluster", methods=["POST"])
+def set_cluster_minutes():
+    global CLUSTER_MINUTES
+    try:
+        minutes = int(request.form.get("minutes", ""))
+    except Exception:
+        return jsonify({"error": "Invalid minutes"}), 400
+    if minutes < 1 or minutes > 60:
+        return jsonify({"error": "Minutes out of range (1-60)"}), 400
+    CLUSTER_MINUTES = minutes
+    _persist_config()
+    # Recompute with new setting
+    recompute_links()
+    broadcast_landing_update()
+    return jsonify({"message": "Updated", "cluster_minutes": CLUSTER_MINUTES})
 
 
 @app.route("/pick_landing_rate_folder", methods=["POST"])
