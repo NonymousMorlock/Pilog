@@ -67,10 +67,10 @@ th { background: var(--surface); }
 tr:nth-child(even) { background: color-mix(in oklab, var(--surface), var(--bg) 40%); }
 
 /* Chips */
-.chip { padding: 2px 8px; border-radius: 10px; font-size: 12px; display: inline-block; }
-.ok { background: color-mix(in oklab, var(--success), transparent 80%); color: var(--success); }
-.warn { background: color-mix(in oklab, var(--warning), transparent 80%); color: var(--warning); }
-.bad { background: color-mix(in oklab, var(--danger), transparent 80%); color: var(--danger); }
+.chip { padding: 2px 8px; border-radius: 10px; font-size: 12px; display: inline-block; border: 1px solid var(--border); }
+.ok { background: color-mix(in oklab, var(--success), transparent 70%); color: var(--success); }
+.warn { background: color-mix(in oklab, var(--warning), transparent 70%); color: var(--warning); }
+.bad { background: color-mix(in oklab, var(--danger), transparent 70%); color: var(--danger); }
 .muted { color: var(--muted); }
 
 /* Toasts */

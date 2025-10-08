@@ -38,11 +38,13 @@
       .replace(/'/g, '&#39;');
   }
 
-  function bandClass(vs) {
-    if (vs == null || isNaN(vs)) return '';
-    if (vs >= -200) return 'ok';
-    if (vs >= -400) return 'warn';
-    return 'bad';
+  function bandInfo(vs) {
+    if (!Number.isFinite(vs)) return { cls: 'muted', label: '' };
+    if (vs >= -125) return { cls: 'ok', label: 'Butter (≥ -125)' };
+    if (vs >= -250) return { cls: 'ok', label: 'Great (-250..-125)' };
+    if (vs >= -350) return { cls: 'warn', label: 'Acceptable (-350..-250)' };
+    if (vs >= -600) return { cls: 'bad', label: 'Hard (-600..-350)' };
+    return { cls: 'bad', label: 'Very hard (< -600)' };
   }
 
   function getFilteredSortedLandingIndices() {
@@ -84,7 +86,7 @@
       const tr = document.createElement('tr');
       tr.id = 'landing-row-' + origIdx;
       const vs = Number(l.VS);
-      const cls = bandClass(vs);
+      const info = bandInfo(vs);
       let linkHtml = '<span class="chip muted">unlinked</span>';
       if (link && link.linkConfidence && link.linkConfidence !== 'unmatched' && link.linkConfidence !== 'ambiguous' && link.flight) {
         const f = link.flight;
@@ -96,14 +98,15 @@
         const label = esc(link.linkConfidence);
         linkHtml = `<span class="${badge}">${label}</span> <button class="btn ghost" data-resolve="1" data-orig="${origIdx}">Resolve</button>`;
       }
+      const qualityText = (l.quality && String(l.quality)) || info.label;
       tr.innerHTML = `
         <td>${esc(l.time)}</td>
         <td>${esc(l.norm_ac || l.aircraft)}</td>
-        <td><span class="chip ${cls}">${isFinite(vs) ? vs.toFixed(1) : ''}</span></td>
+        <td><span class="chip ${info.cls}" title="${esc(info.label)}">${isFinite(vs) ? vs.toFixed(1) : ''}</span></td>
         <td>${l.G != null ? Number(l.G).toFixed(2) : ''}</td>
         <td>${l.nose_rate != null ? Number(l.nose_rate).toFixed(2) : ''}</td>
         <td>${l.float != null ? Number(l.float).toFixed(2) : ''}</td>
-        <td>${esc(l.quality || '')}</td>
+        <td>${esc(qualityText)}</td>
         <td>${linkHtml}</td>
       `;
       // Apply sticky highlight to the same physical row position
@@ -320,6 +323,45 @@
       }
     }
   });
+
+  // Help modal
+  window.openLRHelp = function openLRHelp() {
+    const overlay = document.createElement('div');
+    overlay.style.position = 'fixed';
+    overlay.style.inset = '0';
+    overlay.style.background = 'rgba(0,0,0,.4)';
+    overlay.style.zIndex = '1000';
+    const modal = document.createElement('div');
+    modal.style.maxWidth = '680px';
+    modal.style.margin = '8vh auto';
+    modal.style.background = 'var(--surface)';
+    modal.style.color = 'var(--text)';
+    modal.style.border = '1px solid var(--border)';
+    modal.style.borderRadius = '8px';
+    modal.style.padding = '16px';
+    modal.setAttribute('role', 'dialog');
+    modal.setAttribute('aria-modal', 'true');
+    modal.innerHTML = `
+      <h3 style="margin-top:0;">Landing Rates Help</h3>
+      <div class="muted" style="margin-bottom:8px;">Quick guide to the logging system</div>
+      <div style="line-height:1.6;">
+        <p><strong>Adding logs</strong>: Use <em>Choose LandingRate folder</em> to watch a folder for <code>LandingRate.log</code>, <em>Choose LandingRate file</em> for a single file, or <em>Upload</em> a <code>.log/.csv</code> export.</p>
+        <p><strong>VS thresholds</strong> (from LandingRate plugin): Butter ≥ -125, Great -250..-125, Acceptable -350..-250, Hard -600..-350, Very hard < -600. Colored chips indicate severity; hover for labels.</p>
+        <p><strong>Columns</strong>: VS (vertical speed, fpm), G (g‑force), Nose rate (deg/s), Float (s), Quality (plugin text when available).</p>
+        <p><strong>Link badges</strong>: linked (green), sequence‑assumed/ambiguous (amber), unmatched (red). Use <em>Resolve</em> to manually link.</p>
+        <p><strong>Cluster window</strong>: groups multiple landings within N minutes into a single event.</p>
+      </div>
+      <div class="row" style="justify-content:flex-end; margin-top:12px;">
+        <button class="btn" id="lrHelpClose" type="button">Close</button>
+      </div>
+    `;
+    overlay.appendChild(modal);
+    document.body.appendChild(overlay);
+    function close() { try { document.body.removeChild(overlay); } catch(_) {} }
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+    modal.querySelector('#lrHelpClose').onclick = close;
+    document.addEventListener('keydown', function onKey(e){ if (e.key === 'Escape') { close(); document.removeEventListener('keydown', onKey); } });
+  };
 
   // Pager buttons
   const prevBtn = document.getElementById('prevLandingPage');

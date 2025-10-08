@@ -19,6 +19,7 @@
       <input type="file" name="landingrate" accept=".log,.csv" required>
       <button class="btn" type="submit">Upload</button>
     </form>
+    <button class="btn ghost" type="button" onclick="openLRHelp()" style="margin-left:8px;">Help</button>
     <div class="row" style="margin-top:8px; align-items: center; gap:8px;">
       <label for="clusterMinutes"><strong>Cluster window (minutes):</strong></label>
       <input id="clusterMinutes" type="number" min="1" max="60" step="1" value="10" style="width:90px; padding:6px; border:1px solid var(--border); border-radius:6px; background: var(--bg); color: var(--text);">
@@ -70,6 +71,10 @@
   </div>
 
   <h2>Recent Landings</h2>
+  <div class="muted" aria-label="Legends" style="margin:6px 0;">
+    <div>VS bands (fpm): <span class="chip ok" title="Butter (≥ -125)">Butter ≥ -125</span> · <span class="chip ok" title="Great (-250..-125)">Great -250..-125</span> · <span class="chip warn" title="Acceptable (-350..-250)">Acceptable -350..-250</span> · <span class="chip bad" title="Hard (-600..-350)">Hard -600..-350</span> · <span class="chip bad" title="Very hard (< -600)">Very hard &lt; -600</span></div>
+    <div>Link badges: <span class="chip ok">linked</span> · <span class="chip warn">sequence‑assumed / ambiguous</span> · <span class="chip bad">unmatched</span></div>
+  </div>
   {% if landings|length == 0 %}
   <div class="card" role="status" aria-live="polite" style="margin:12px 0;">
     <div style="font-weight:600;">No landing rates yet</div>
@@ -89,7 +94,7 @@
       <tr>
         <th scope="col" data-sort-key="time" aria-sort="none" style="cursor:pointer;">Time</th>
         <th scope="col" data-sort-key="norm_ac" aria-sort="none" style="cursor:pointer;">Aircraft</th>
-        <th scope="col" data-sort-key="VS" aria-sort="none" style="cursor:pointer;">VS (fpm)</th>
+        <th scope="col" data-sort-key="VS" aria-sort="none" style="cursor:pointer;" title="Butter ≥ -125; Great -250..-125; Acceptable -350..-250; Hard -600..-350; Very hard < -600">VS (fpm)</th>
         <th scope="col" data-sort-key="G" aria-sort="none" style="cursor:pointer;">G</th>
         <th scope="col" data-sort-key="nose_rate" aria-sort="none" style="cursor:pointer;">Nose rate</th>
         <th scope="col" data-sort-key="float" aria-sort="none" style="cursor:pointer;">Float</th>
