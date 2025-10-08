@@ -81,7 +81,7 @@
   <table>
     <thead>
       <tr>
-        <th>Date</th><th>From</th><th>To</th><th>Hours</th><th>Aircraft</th><th>Tail</th><th>Landing Rate</th>
+        <th>Date</th><th>From</th><th>To</th><th>Hours</th><th>Aircraft</th><th>Tail</th>{% if landing_available %}<th>Landing Rate</th>{% endif %}
       </tr>
     </thead>
     <tbody id="flightTableBody">
@@ -93,6 +93,7 @@
         <td>{{ "%.1f"|format(f.hours) }}</td>
         <td>{{ f.aircraft }}</td>
         <td>{{ f.tail }}</td>
+        {% if landing_available %}
         <td>
           {% set li = landing_index_for_flight[loop.index0] %}
           <a
@@ -102,6 +103,7 @@
             View
           </a>
         </td>
+        {% endif %}
       </tr>
       {% endfor %}
     </tbody>

@@ -567,9 +567,11 @@ def dashboard():
         landing_index_for_flight = [None] * len(flights)
     data = summarise_flights(flights)
 
+    landing_available = bool((landing_rate_path or landing_watched_folder) or (cached_landings and len(cached_landings) > 0))
     return render_template("dashboard.html", data=data, flights=flights, filename=filename,
                            watched_folder=watched_folder,
-                           landing_index_for_flight=landing_index_for_flight)
+                           landing_index_for_flight=landing_index_for_flight,
+                           landing_available=landing_available)
 
 
 @app.route("/landing-rates", methods=['GET'])
@@ -577,9 +579,14 @@ def landing_rates_page():
     # Initial render, page will fetch live data via socket/API
     global landing_rate_path, landing_watched_folder
     landings = cached_landings or get_current_landings()
+    try:
+        recompute_links()
+    except Exception as e:
+        print('Failed to recompute links for landing rates page:', e)
     return render_template("landing_rates.html",
                            summary=summarise_landings(landings),
                            landings=landings,
+                           links=landing_links,
                            source_file=landing_rate_path,
                            source_folder=landing_watched_folder)
 

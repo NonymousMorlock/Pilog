@@ -36,6 +36,7 @@
   </script>
   <script id="initialSummary" type="application/json">{{ summary|tojson }}</script>
   <script id="initialLandings" type="application/json">{{ landings|tojson }}</script>
+  <script id="initialLinks" type="application/json">{{ links|tojson }}</script>
 </head>
 <body>
   <h1>🛬 Landing Rates</h1>
@@ -168,8 +169,9 @@
 
     const initialSummary = JSON.parse(document.getElementById('initialSummary').textContent || '{}');
     const initialLandings = JSON.parse(document.getElementById('initialLandings').textContent || '[]');
+    const initialLinks = JSON.parse(document.getElementById('initialLinks').textContent || '{}');
     renderSummary(initialSummary, initialLandings);
-    renderTable(initialLandings, {});
+    renderTable(initialLandings, initialLinks || {});
 
     const socket = io();
     socket.on('landing_rate_update', (payload) => {
