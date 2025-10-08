@@ -39,19 +39,20 @@
       cursor: pointer;
     }
     button:hover { background: #2ea043; }
+    label { display: block; margin-bottom: 0.5rem; }
   </style>
 </head>
 <body>
   <h1>🛫 X-Plane Logbook Dashboard</h1>
 
   <form id="watcherForm" onsubmit="return false;">
-    <label for="chooseFolderBtn"><strong>Choose folder to watch (contains X-Plane Pilot.txt):</strong></label><br>
+    <label for="chooseFolderBtn"><strong>Choose folder to watch (contains X-Plane Pilot.txt):</strong></label>
     <button id="chooseFolderBtn" type="button" onclick="chooseFolder()">Choose Folder…</button>
     <span id="watchedFolder" style="margin-left: 8px; color:#8b949e;">{{ watched_folder if watched_folder else '' }}</span>
   </form>
 
   <form action="/" method="POST" enctype="multipart/form-data">
-    <label for="logfileInput"><strong>Upload another logbook (.txt):</strong></label><br>
+    <label for="logfileInput"><strong>Upload another logbook (.txt):</strong></label>
     <input id="logfileInput" type="file" name="logfile" accept=".txt" required>
     <button type="submit">Upload</button>
   </form>
