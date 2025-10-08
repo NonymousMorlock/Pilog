@@ -93,7 +93,8 @@
         linkHtml = `<a class="${badge}" href="${href}">View flight ${esc(f.dep)}→${esc(f.arr)}</a>`;
       } else if (link && link.linkConfidence) {
         const badge = link.linkConfidence === 'ambiguous' ? 'chip warn' : 'chip bad';
-        linkHtml = `<span class="${badge}">${esc(link.linkConfidence)}</span>`;
+        const label = esc(link.linkConfidence);
+        linkHtml = `<span class="${badge}">${label}</span> <button class="btn ghost" data-resolve="1" data-orig="${origIdx}">Resolve</button>`;
       }
       tr.innerHTML = `
         <td>${esc(l.time)}</td>
@@ -309,6 +310,94 @@
       th.setAttribute('aria-sort', sortDir === 'asc' ? 'ascending' : 'descending');
       landingPage = 0;
       renderTable();
+    });
+  })();
+
+  // Resolve dialog helpers
+  function openResolveDialog(landingIndex) {
+    // Overlay
+    const overlay = document.createElement('div');
+    overlay.style.position = 'fixed';
+    overlay.style.inset = '0';
+    overlay.style.background = 'rgba(0,0,0,.4)';
+    overlay.style.zIndex = '1000';
+    // Modal
+    const modal = document.createElement('div');
+    modal.style.maxWidth = '520px';
+    modal.style.margin = '10vh auto';
+    modal.style.background = 'var(--surface)';
+    modal.style.color = 'var(--text)';
+    modal.style.border = '1px solid var(--border)';
+    modal.style.borderRadius = '8px';
+    modal.style.padding = '16px';
+    modal.innerHTML = `
+      <h3 style="margin-top:0;">Resolve landing #${landingIndex}</h3>
+      <div class="muted" style="margin-bottom:8px;">Pick the matching flight</div>
+      <select id="resolveSelect" style="width:100%; padding:8px; border:1px solid var(--border); border-radius:6px; background:var(--bg); color:var(--text);"></select>
+      <div class="row" style="justify-content:flex-end; margin-top:12px;">
+        <button class="btn ghost" id="resolveCancel" type="button">Cancel</button>
+        <button class="btn" id="resolveConfirm" type="button">Link</button>
+      </div>
+    `;
+    overlay.appendChild(modal);
+    document.body.appendChild(overlay);
+
+    function close() {
+      try { document.body.removeChild(overlay); } catch(_) {}
+    }
+
+    // Load candidates
+    fetch(`/links/candidates?landing_index=${encodeURIComponent(landingIndex)}`)
+      .then(r => r.json())
+      .then(json => {
+        const sel = modal.querySelector('#resolveSelect');
+        sel.innerHTML = '';
+        const arr = (json && json.candidates) || [];
+        if (!arr.length) {
+          const opt = document.createElement('option');
+          opt.value = '';
+          opt.textContent = 'No candidates found for this landing';
+          sel.appendChild(opt);
+        } else {
+          for (const c of arr) {
+            const f = c.flight || {};
+            const opt = document.createElement('option');
+            opt.value = String(c.flight_index);
+            opt.textContent = `#${c.flight_index}: ${f.date} ${f.dep || ''}→${f.arr || ''} ${f.aircraft || ''}`;
+            sel.appendChild(opt);
+          }
+        }
+      }).catch(() => {});
+
+    modal.querySelector('#resolveCancel').onclick = close;
+    modal.querySelector('#resolveConfirm').onclick = () => {
+      const sel = modal.querySelector('#resolveSelect');
+      const v = sel && sel.value;
+      if (!v) { showToast('Pick a flight to link', 'error'); return; }
+      const fd = new FormData();
+      fd.append('landing_index', String(landingIndex));
+      fd.append('flight_index', String(v));
+      fetch('/links/resolve', { method: 'POST', body: fd })
+        .then(r => r.json().then(j => ({ ok: r.ok, j })))
+        .then(({ ok, j }) => {
+          if (!ok) { showToast(j && j.error || 'Failed to link', 'error'); return; }
+          showToast('Linked landing to flight', 'success');
+          close();
+        })
+        .catch(e => { showToast('Error: ' + e, 'error'); });
+    };
+  }
+
+  // Event delegation for Resolve buttons
+  (function(){
+    const tbody = document.getElementById('landingTbody');
+    if (!tbody) return;
+    tbody.addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-resolve]');
+      if (!btn) return;
+      const idx = Number(btn.getAttribute('data-orig'));
+      if (!Number.isFinite(idx)) return;
+      openResolveDialog(idx);
     });
   })();
 

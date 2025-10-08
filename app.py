@@ -50,6 +50,9 @@ landing_links = {}  # key: landing index -> { flight, linkConfidence }
 flight_link_index_by_key = {}  # key: (date, norm_ac, flight_idx_in_group) -> landing indices
 flight_to_landing_indices = {}  # key: global flight idx -> [landing indices]
 
+# Manual overrides: landing index -> flight index
+manual_overrides = {}
+
 
 def _persist_watched_folder(path):
     try:
@@ -91,6 +94,31 @@ def _load_persisted_landing_rate_path():
             print('Failed to load persisted landing rate path:', e)
             return None
     return None
+
+
+def _persist_manual_links(mapping: dict):
+    try:
+        import json
+        os.makedirs("uploads", exist_ok=True)
+        with open(os.path.join("uploads", "manual_links.json"), "w") as f:
+            json.dump(mapping or {}, f)
+    except Exception as e:
+        print('Failed to persist manual links:', e)
+
+
+def _load_persisted_manual_links():
+    path = os.path.join("uploads", "manual_links.json")
+    if os.path.exists(path):
+        try:
+            import json
+            with open(path) as f:
+                data = json.load(f) or {}
+                # ensure keys are ints
+                return {int(k): int(v) for k, v in data.items() if isinstance(k, (str, int))}
+        except Exception as e:
+            print('Failed to load persisted manual links:', e)
+            return {}
+    return {}
 
 
 def normalize_aircraft(name: str) -> str:
@@ -347,7 +375,8 @@ def broadcast_update():
         landing_avail = False
         try:
             recompute_links()
-            landing_avail = bool((landing_rate_path or landing_watched_folder) or (cached_landings and len(cached_landings) > 0))
+            landing_avail = bool(
+                (landing_rate_path or landing_watched_folder) or (cached_landings and len(cached_landings) > 0))
             for i, _ in enumerate(flights):
                 indices = flight_to_landing_indices.get(i) if 'flight_to_landing_indices' in globals() else None
                 landing_idx_for_flight.append(indices[0] if indices else None)
@@ -386,7 +415,7 @@ def summarise_landings(landings):
 
 
 def recompute_links():
-    global landing_links, flight_link_index_by_key, flight_to_landing_indices
+    global landing_links, flight_link_index_by_key, flight_to_landing_indices, manual_overrides
     flights = get_current_flights()
     landings = cached_landings or []
     # Build groups
@@ -417,24 +446,78 @@ def recompute_links():
             for item in landing_list:
                 landing_links[item["idx"]] = {"flight": None, "linkConfidence": "unmatched"}
             continue
-        if lf == 1 and ll == 1:
-            fref = flights_list[0]
-            item = landing_list[0]
-            landing_links[item["idx"]] = {"flight": fref["flight"], "flightIndex": fref["idx"], "linkConfidence": "unique-date-aircraft"}
+
+        # Apply manual overrides first for this group (remove from pools)
+        overridden_landing_indices = set()
+        overridden_flight_indices = set()
+        for item in landing_list:
+            li = item["idx"]
+            if li in manual_overrides:
+                fidx = manual_overrides.get(li)
+                if isinstance(fidx, int) and 0 <= fidx < len(flights):
+                    fref_all = flights[fidx]
+                    # Accept override even if cross-group; but tag as manual
+                    landing_links[li] = {"flight": fref_all, "flightIndex": fidx, "linkConfidence": "manual"}
+                    flight_to_landing_indices.setdefault(fidx, []).append(li)
+                    overridden_landing_indices.add(li)
+                    overridden_flight_indices.add(fidx)
+
+        # Build working pools excluding overrides
+        working_landings = [it for it in landing_list if it["idx"] not in overridden_landing_indices]
+        working_flights = [it for it in flights_list if it["idx"] not in overridden_flight_indices]
+
+        lf_work = len(working_flights)
+        ll_work = len(working_landings)
+
+        if lf_work == 0 and ll_work > 0:
+            for item in working_landings:
+                landing_links[item["idx"]] = {"flight": None, "linkConfidence": "unmatched"}
+            continue
+
+        # Case: one-to-one
+        if lf_work == 1 and ll_work == 1:
+            fref = working_flights[0]
+            item = working_landings[0]
+            landing_links[item["idx"]] = {"flight": fref["flight"], "flightIndex": fref["idx"],
+                                          "linkConfidence": "unique-date-aircraft"}
             flight_key = (fref["flight"]["date"], fref["flight"]["norm_ac"], 0)
             flight_link_index_by_key.setdefault(flight_key, []).append(item["idx"])
             flight_to_landing_indices.setdefault(fref["idx"], []).append(item["idx"])
             continue
-        if lf == ll and lf > 0:
-            for i, item in enumerate(landing_list):
-                fref = flights_list[i]
-                landing_links[item["idx"]] = {"flight": fref["flight"], "flightIndex": fref["idx"], "linkConfidence": "sequence-assumed"}
+
+        # Heuristic 1: sequence-assumed when counts equal
+        if lf_work == ll_work and lf_work > 0:
+            for i, item in enumerate(working_landings):
+                fref = working_flights[i]
+                landing_links[item["idx"]] = {"flight": fref["flight"], "flightIndex": fref["idx"],
+                                              "linkConfidence": "sequence-assumed"}
                 flight_key = (fref["flight"]["date"], fref["flight"]["norm_ac"], i)
                 flight_link_index_by_key.setdefault(flight_key, []).append(item["idx"])
                 flight_to_landing_indices.setdefault(fref["idx"], []).append(item["idx"])
             continue
-        # Counts mismatch and multiple flights -> ambiguous
-        for item in landing_list:
+
+        # Heuristic 2: distribute by declared flight landing counts if totals match
+        total_declared = sum(int(max(0, f["flight"].get("landings", 0))) for f in working_flights)
+        if ll_work > 0 and total_declared == ll_work and total_declared > 0:
+            cursor = 0
+            for fi, fref in enumerate(working_flights):
+                k = int(max(0, fref["flight"].get("landings", 0)))
+                for j in range(k):
+                    if cursor >= ll_work:
+                        break
+                    item = working_landings[cursor]
+                    landing_links[item["idx"]] = {"flight": fref["flight"], "flightIndex": fref["idx"],
+                                                  "linkConfidence": "count-assigned"}
+                    flight_to_landing_indices.setdefault(fref["idx"], []).append(item["idx"])
+                    cursor += 1
+            # Any leftovers should be marked ambiguous (shouldn't happen if sums matched)
+            for r in range(cursor, ll_work):
+                item = working_landings[r]
+                landing_links[item["idx"]] = {"flight": None, "linkConfidence": "ambiguous"}
+            continue
+
+        # Fallback: ambiguous for remaining
+        for item in working_landings:
             landing_links[item["idx"]] = {"flight": None, "linkConfidence": "ambiguous"}
 
 
@@ -534,6 +617,12 @@ def init_watcher_if_configured():
                 landing_watched_folder = "logs"
                 cached_landings = parse_landing_rates(default_candidate)
                 start_landing_rate_watcher(landing_watched_folder)
+        # Load manual overrides
+        try:
+            global manual_overrides
+            manual_overrides = _load_persisted_manual_links()
+        except Exception as e:
+            print('Failed to load manual overrides:', e)
         recompute_links()
     except Exception as e:
         print('Failed to initialize landing rate watcher:', e)
@@ -582,7 +671,8 @@ def dashboard():
         landing_index_for_flight = [None] * len(flights)
     data = summarise_flights(flights)
 
-    landing_available = bool((landing_rate_path or landing_watched_folder) or (cached_landings and len(cached_landings) > 0))
+    landing_available = bool(
+        (landing_rate_path or landing_watched_folder) or (cached_landings and len(cached_landings) > 0))
     return render_template("dashboard.html", data=data, flights=flights, filename=filename,
                            watched_folder=watched_folder,
                            landing_index_for_flight=landing_index_for_flight,
@@ -654,6 +744,42 @@ def get_landing_data():
             "folder": landing_watched_folder,
         }
     })
+
+
+# --- Manual linking endpoints ---
+
+@app.route("/links/resolve", methods=["POST"])
+def resolve_link():
+    try:
+        li = int(request.form.get("landing_index", ""))
+        fi = int(request.form.get("flight_index", ""))
+    except Exception:
+        return jsonify({"error": "Invalid indices"}), 400
+    global manual_overrides
+    manual_overrides[li] = fi
+    _persist_manual_links(manual_overrides)
+    recompute_links()
+    broadcast_landing_update()
+    return jsonify({"message": "Link set", "landing_index": li, "flight_index": fi})
+
+
+@app.route("/links/candidates", methods=["GET"])
+def candidates_for_landing():
+    try:
+        li = int(request.args.get("landing_index", ""))
+    except Exception:
+        return jsonify({"error": "Invalid landing_index"}), 400
+    flights = get_current_flights()
+    landings = cached_landings or []
+    if li < 0 or li >= len(landings):
+        return jsonify({"error": "landing_index out of range"}), 400
+    landing = landings[li]
+    # Basic candidate heuristic: same (date, norm_ac)
+    same_group = []
+    for idx, f in enumerate(flights):
+        if f.get("date") == landing.get("date") and f.get("norm_ac") == landing.get("norm_ac"):
+            same_group.append({"flight_index": idx, "flight": f})
+    return jsonify({"candidates": same_group})
 
 
 @app.route("/pick_landing_rate_folder", methods=["POST"])
