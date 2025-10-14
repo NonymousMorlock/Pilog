@@ -873,20 +873,20 @@ def resolve_link():
 @app.route("/links/candidates", methods=["GET"])
 def candidates_for_landing():
     try:
-        li = int(request.args.get("landing_index", ""))
+        landing_index = int(request.args.get("landing_index", ""))
     except Exception as e:
         print('Error parsing landing_index for candidates:', e)
         return jsonify({"error": "Invalid landing_index"}), 400
     flights = get_current_flights()
     landings = cached_landings or []
-    if li < 0 or li >= len(landings):
+    if landing_index < 0 or landing_index >= len(landings):
         return jsonify({"error": "landing_index out of range"}), 400
-    landing = landings[li]
+    landing = landings[landing_index]
     # Basic candidate heuristic: same (date, norm_ac)
     same_group = []
-    for idx, f in enumerate(flights):
-        if f.get("date") == landing.get("date") and f.get("norm_ac") == landing.get("norm_ac"):
-            same_group.append({"flight_index": idx, "flight": f})
+    for idx, flight in enumerate(flights):
+        if flight.get("date") == landing.get("date") and flight.get("norm_ac") == landing.get("norm_ac"):
+            same_group.append({"flight_index": idx, "flight": flight})
     return jsonify({"candidates": same_group})
 
 
