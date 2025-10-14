@@ -602,7 +602,7 @@ def recompute_links():
 
         # Heuristic 3: distribute by declared flight landing counts if totals match (raw landings)
         total_declared = sum(int(max(0, f["flight"].get("landings", 0))) for f in working_flights)
-        if ll_work > 0 and total_declared == ll_work and total_declared > 0:
+        if 0 < ll_work == total_declared and total_declared > 0:
             cursor = 0
             for fi, fref in enumerate(working_flights):
                 k = int(max(0, fref["flight"].get("landings", 0)))
