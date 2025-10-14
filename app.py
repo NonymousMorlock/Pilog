@@ -887,6 +887,14 @@ def candidates_for_landing():
     for idx, flight in enumerate(flights):
         if flight.get("date") == landing.get("date") and flight.get("norm_ac") == landing.get("norm_ac"):
             same_group.append({"flight_index": idx, "flight": flight})
+
+    group_start_index = same_group[0]["flight_index"] if same_group else None
+    group_end_index = same_group[-1]["flight_index"] if same_group else None
+
+    if group_start_index is not None and group_start_index > 0:
+        same_group.insert(0, {"flight_index": group_start_index - 1, "flight": flights[group_start_index - 1], "note": "Before group"})
+    if group_end_index is not None and group_end_index < len(flights) - 1:
+        same_group.append({"flight_index": group_end_index + 1, "flight": flights[group_end_index + 1], "note": "After group"})
     return jsonify({"candidates": same_group})
 
 
