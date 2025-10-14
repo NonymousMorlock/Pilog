@@ -56,7 +56,8 @@ manual_overrides = {}
 # Heuristic config (in minutes). Can override via env LANDING_CLUSTER_MINUTES
 try:
     CLUSTER_MINUTES = int(os.getenv('LANDING_CLUSTER_MINUTES', '10'))
-except Exception:
+except Exception as config_exception:
+    print('Failed to parse LANDING_CLUSTER_MINUTES env var:', config_exception)
     CLUSTER_MINUTES = 10
 
 
@@ -531,10 +532,12 @@ def recompute_links():
         def _parse_dt_safe(s):
             try:
                 return datetime.strptime(s, "%Y-%m-%d %H:%M:%S")
-            except Exception:
+            except Exception as parse_exception:
+                print('Failed to parse datetime in cluster heuristic:', parse_exception)
                 try:
                     return datetime.fromisoformat(str(s).replace("/", "-").replace("T", " "))
-                except Exception:
+                except Exception as normalisation_exception:
+                    print('Failed to parse datetime in cluster heuristic fallback:', normalisation_exception)
                     return None
         clusters = []  # list[list[item]] where item ∈ working_landings
         if ll_work > 0:
@@ -552,7 +555,8 @@ def recompute_links():
                     if last_dt and dt:
                         try:
                             delta_min = abs((dt - last_dt).total_seconds()) / 60.0
-                        except Exception:
+                        except Exception as e:
+                            print('Failed to compute delta minutes in clustering:', e)
                             delta_min = None
                     if delta_min is not None and delta_min <= CLUSTER_MINUTES:
                         current.append(it)
@@ -855,7 +859,8 @@ def resolve_link():
     try:
         li = int(request.form.get("landing_index", ""))
         fi = int(request.form.get("flight_index", ""))
-    except Exception:
+    except Exception as e:
+        print('Error parsing indices for resolve_link:', e)
         return jsonify({"error": "Invalid indices"}), 400
     global manual_overrides
     manual_overrides[li] = fi
@@ -869,7 +874,8 @@ def resolve_link():
 def candidates_for_landing():
     try:
         li = int(request.args.get("landing_index", ""))
-    except Exception:
+    except Exception as e:
+        print('Error parsing landing_index for candidates:', e)
         return jsonify({"error": "Invalid landing_index"}), 400
     flights = get_current_flights()
     landings = cached_landings or []
@@ -903,7 +909,8 @@ def clear_override():
     if li_raw:
         try:
             li = int(li_raw)
-        except Exception:
+        except Exception as e:
+            print('Error parsing landing_index for clear_override:', e)
             return jsonify({"error": "Invalid landing_index"}), 400
         if li in manual_overrides:
             manual_overrides.pop(li, None)
@@ -921,7 +928,8 @@ def set_cluster_minutes():
     global CLUSTER_MINUTES
     try:
         minutes = int(request.form.get("minutes", ""))
-    except Exception:
+    except Exception as e:
+        print('Error parsing minutes for set_cluster_minutes:', e)
         return jsonify({"error": "Invalid minutes"}), 400
     if minutes < 1 or minutes > 60:
         return jsonify({"error": "Minutes out of range (1-60)"}), 400
