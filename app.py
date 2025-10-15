@@ -510,8 +510,11 @@ def recompute_links():
         if lf_work == 1 and ll_work == 1:
             fref = working_flights[0]
             item = working_landings[0]
-            landing_links[item["idx"]] = {"flight": fref["flight"], "flightIndex": fref["idx"],
-                                          "linkConfidence": "unique-date-aircraft"}
+            landing_links[item["idx"]] = {
+                "flight": fref["flight"],
+                "flightIndex": fref["idx"],
+                "linkConfidence": "unique-date-aircraft",
+            }
             flight_key = (fref["flight"]["date"], fref["flight"]["norm_ac"], 0)
             flight_link_index_by_key.setdefault(flight_key, []).append(item["idx"])
             flight_to_landing_indices.setdefault(fref["idx"], []).append(item["idx"])
@@ -521,8 +524,11 @@ def recompute_links():
         if lf_work == ll_work and lf_work > 0:
             for i, item in enumerate(working_landings):
                 fref = working_flights[i]
-                landing_links[item["idx"]] = {"flight": fref["flight"], "flightIndex": fref["idx"],
-                                              "linkConfidence": "sequence-assumed"}
+                landing_links[item["idx"]] = {
+                    "flight": fref["flight"],
+                    "flightIndex": fref["idx"],
+                    "linkConfidence": "sequence-assumed",
+                }
                 flight_key = (fref["flight"]["date"], fref["flight"]["norm_ac"], i)
                 flight_link_index_by_key.setdefault(flight_key, []).append(item["idx"])
                 flight_to_landing_indices.setdefault(fref["idx"], []).append(item["idx"])
@@ -576,8 +582,11 @@ def recompute_links():
                 for i, cluster in enumerate(clusters):
                     fref = working_flights[i]
                     for it in cluster:
-                        landing_links[it["idx"]] = {"flight": fref["flight"], "flightIndex": fref["idx"],
-                                                      "linkConfidence": "cluster-sequence"}
+                        landing_links[it["idx"]] = {
+                            "flight": fref["flight"],
+                            "flightIndex": fref["idx"],
+                            "linkConfidence": "cluster-sequence",
+                        }
                         flight_to_landing_indices.setdefault(fref["idx"], []).append(it["idx"])
                 continue
             # Case B: clusters count matches total declared → distribute by declared counts
@@ -589,8 +598,11 @@ def recompute_links():
                         if ci >= total_clusters:
                             break
                         for it in clusters[ci]:
-                            landing_links[it["idx"]] = {"flight": fref["flight"], "flightIndex": fref["idx"],
-                                                          "linkConfidence": "cluster-assigned"}
+                            landing_links[it["idx"]] = {
+                                "flight": fref["flight"],
+                                "flightIndex": fref["idx"],
+                                "linkConfidence": "cluster-assigned",
+                            }
                             flight_to_landing_indices.setdefault(fref["idx"], []).append(it["idx"])
                         ci += 1
                 # Mark any leftover in working_landings that didn't get assigned as ambiguous
@@ -778,10 +790,15 @@ def dashboard():
 
     landing_available = bool(
         (landing_rate_path or landing_watched_folder) or (cached_landings and len(cached_landings) > 0))
-    return render_template("dashboard.html", data=data, flights=flights, filename=filename,
-                           watched_folder=watched_folder,
-                           landing_index_for_flight=landing_index_for_flight,
-                           landing_available=landing_available)
+    return render_template(
+        "dashboard.html",
+        data=data,
+        flights=flights,
+        filename=filename,
+        watched_folder=watched_folder,
+        landing_index_for_flight=landing_index_for_flight,
+        landing_available=landing_available,
+    )
 
 
 @app.route("/landing-rates", methods=['GET'])
@@ -793,12 +810,14 @@ def landing_rates_page():
         recompute_links()
     except Exception as e:
         print('Failed to recompute links for landing rates page:', e)
-    return render_template("landing_rates.html",
-                           summary=summarise_landings(landings),
-                           landings=landings,
-                           links=landing_links,
-                           source_file=landing_rate_path,
-                           source_folder=landing_watched_folder)
+    return render_template(
+        "landing_rates.html",
+        summary=summarise_landings(landings),
+        landings=landings,
+        links=landing_links,
+        source_file=landing_rate_path,
+        source_folder=landing_watched_folder,
+    )
 
 
 @app.route("/set_folder", methods=["POST"])
@@ -892,7 +911,14 @@ def candidates_for_landing():
     group_end_index = same_group[-1]["flight_index"] if same_group else None
 
     if group_start_index is not None and group_start_index > 0:
-        same_group.insert(0, {"flight_index": group_start_index - 1, "flight": flights[group_start_index - 1], "note": "Before group"})
+        same_group.insert(
+            0,
+            {
+                "flight_index": group_start_index - 1,
+                "flight": flights[group_start_index - 1],
+                "note": "Before group",
+            },
+        )
     if group_end_index is not None and group_end_index < len(flights) - 1:
         same_group.append({"flight_index": group_end_index + 1, "flight": flights[group_end_index + 1], "note": "After group"})
     return jsonify({"candidates": same_group})
@@ -993,8 +1019,10 @@ def pick_landing_rate_file():
         root = Tk()
         root.withdraw()
         root.wm_attributes('-topmost', 1)
-        selected = filedialog.askopenfilename(title="Select LandingRate.log",
-                                              filetypes=[("Log/CSV", "*.log *.csv"), ("All", "*.*")])
+        selected = filedialog.askopenfilename(
+            title="Select LandingRate.log",
+            filetypes=[("Log/CSV", "*.log *.csv"), ("All", "*.*")],
+        )
         root.destroy()
         if not selected:
             return jsonify({"error": "No file selected"}), 400
