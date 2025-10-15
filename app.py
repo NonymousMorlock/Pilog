@@ -362,8 +362,10 @@ class LandingRateHandler(FileSystemEventHandler):
         if event.is_directory:
             return
         base = os.path.basename(event.src_path)
-        if base == self.target or landing_rate_path and os.path.abspath(event.src_path) == os.path.abspath(
-                landing_rate_path):
+        if (
+                (base == self.target or landing_rate_path) and
+                (os.path.abspath(event.src_path) == os.path.abspath(landing_rate_path))
+        ):
             self._maybe_refresh(event.src_path)
 
     def on_created(self, event):
@@ -545,6 +547,7 @@ def recompute_links():
                 except Exception as normalisation_exception:
                     print('Failed to parse datetime in cluster heuristic fallback:', normalisation_exception)
                     return None
+
         clusters = []  # list[list[item]] where item ∈ working_landings
         if ll_work > 0:
             sorted_work = sorted(working_landings, key=lambda x: x["landing"].get("time") or "")
@@ -920,7 +923,11 @@ def candidates_for_landing():
             },
         )
     if group_end_index is not None and group_end_index < len(flights) - 1:
-        same_group.append({"flight_index": group_end_index + 1, "flight": flights[group_end_index + 1], "note": "After group"})
+        same_group.append({
+            "flight_index": group_end_index + 1,
+            "flight": flights[group_end_index + 1],
+            "note": "After group",
+        })
     return jsonify({"candidates": same_group})
 
 
