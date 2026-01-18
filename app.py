@@ -1,3 +1,5 @@
+import json
+import logging
 import os
 import re
 import tempfile
@@ -5,19 +7,34 @@ import threading
 from collections import defaultdict
 from csv import reader
 from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from flask import Flask, render_template, request, jsonify
 from flask_socketio import SocketIO
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
 try:
     from tkinter import Tk, filedialog
 
     TKINTER_AVAILABLE = True
 except Exception as exception:
-    print('Tkinter not available:', exception)
     TKINTER_AVAILABLE = False
+
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
@@ -28,132 +45,199 @@ app.config['MAX_CONTENT_LENGTH'] = 2 * 1024 * 1024  # 2MB limit
 LOGBOOK_FILENAME = "X-Plane Pilot.txt"
 DEFAULT_LOG_FILE = f"logs/{LOGBOOK_FILENAME}"
 DEFAULT_LOGBOOK_NAME = "Default Logbook"
-
 LANDING_RATE_FILENAME = "LandingRate.log"
 
-# --- In-memory cache and watcher state ---
-cached_flights = None
-cached_filename = DEFAULT_LOGBOOK_NAME
-watched_folder = None
-observer = None
-watcher_initialized = False
+
+class AppState:
+    """Thread-safe application state manager for Pilog."""
+    
+    def __init__(self) -> None:
+        """Initialize app state with locks for thread safety."""
+        self._lock = threading.RLock()
+        
+        # Flight/logbook state
+        self.cached_flights: Optional[List[Dict[str, Any]]] = None
+        self.cached_filename: str = DEFAULT_LOGBOOK_NAME
+        self.watched_folder: Optional[str] = None
+        self.observer: Optional[Observer] = None
+        self.watcher_initialized: bool = False
+        
+        # Landing rate state
+        self.cached_landings: List[Dict[str, Any]] = []
+        self.landing_rate_path: Optional[str] = None
+        self.landing_watched_folder: Optional[str] = None
+        self.landing_observer: Optional[Observer] = None
+        
+        # Link mappings
+        self.landing_links: Dict[int, Dict[str, Any]] = {}
+        self.flight_to_landing_indices: Dict[int, List[int]] = {}
+        
+        # Manual overrides
+        self.manual_overrides: Dict[int, int] = {}
+        
+        # Configuration
+        self.cluster_minutes: int = self._load_cluster_minutes()
+    
+    def _load_cluster_minutes(self) -> int:
+        """Load cluster minutes from environment or config."""
+        try:
+            return int(os.getenv('LANDING_CLUSTER_MINUTES', '10'))
+        except ValueError:
+            logger.warning('Invalid LANDING_CLUSTER_MINUTES, using default 10')
+            return 10
+    
+    def with_lock(self, func, *args, **kwargs) -> Any:
+        """Execute function with lock."""
+        with self._lock:
+            return func(*args, **kwargs)
+    
+    def get_cluster_minutes(self) -> int:
+        """Thread-safe getter for cluster minutes."""
+        with self._lock:
+            return self.cluster_minutes
+    
+    def set_cluster_minutes(self, minutes: int) -> None:
+        """Thread-safe setter for cluster minutes."""
+        if not 1 <= minutes <= 60:
+            raise ValueError("Cluster minutes must be between 1 and 60")
+        with self._lock:
+            self.cluster_minutes = minutes
+
+
+# Global app state instance
+app_state = AppState()
 watcher_init_lock = threading.Lock()
 
-# Landing rate in-memory state and watcher
-cached_landings = []
-landing_rate_path = None  # explicit file path or folder containing LandingRate.log
-landing_watched_folder = None  # folder being watched (file's parent if file set)
-landing_observer = None
-
-# Derived maps
-landing_links = {}  # key: landing index -> { flight, linkConfidence }
-flight_link_index_by_key = {}  # key: (date, norm_ac, flight_idx_in_group) -> landing indices
-flight_to_landing_indices = {}  # key: global flight idx -> [landing indices]
-
-# Manual overrides: landing index -> flight index
-manual_overrides = {}
-
-# Heuristic config (in minutes). Can override via env LANDING_CLUSTER_MINUTES
-try:
-    CLUSTER_MINUTES = int(os.getenv('LANDING_CLUSTER_MINUTES', '10'))
-except Exception as config_exception:
-    print('Failed to parse LANDING_CLUSTER_MINUTES env var:', config_exception)
-    CLUSTER_MINUTES = 10
 
 
-def _persist_config():
-    try:
-        import json
-        os.makedirs("uploads", exist_ok=True)
-        with open(os.path.join("uploads", "config.json"), "w") as f:
-            json.dump({"cluster_minutes": CLUSTER_MINUTES}, f)
-    except Exception as e:
-        print('Failed to persist config:', e)
-
-
-def _load_config():
-    global CLUSTER_MINUTES
-    path = os.path.join("uploads", "config.json")
-    if os.path.exists(path):
-        try:
-            import json
-            with open(path) as f:
-                data = json.load(f) or {}
-                cm = int(data.get("cluster_minutes", CLUSTER_MINUTES))
-                if 1 <= cm <= 60:
-                    CLUSTER_MINUTES = cm
-        except Exception as e:
-            print('Failed to load config:', e)
-
-
-def _persist_watched_folder(path):
+def _persist_config() -> None:
+    """Persist cluster configuration to uploads/config.json."""
     try:
         os.makedirs("uploads", exist_ok=True)
-        with open(os.path.join("uploads", "watched_folder.txt"), "w") as f:
+        config_path = os.path.join("uploads", "config.json")
+        with open(config_path, "w") as f:
+            json.dump({"cluster_minutes": app_state.cluster_minutes}, f)
+        logger.debug(f"Config persisted to {config_path}")
+    except OSError as e:
+        logger.error(f"Failed to persist config: {e}")
+
+
+def _load_config() -> None:
+    """Load cluster configuration from uploads/config.json."""
+    config_path = os.path.join("uploads", "config.json")
+    if not os.path.exists(config_path):
+        return
+    
+    try:
+        with open(config_path) as f:
+            data = json.load(f) or {}
+            cm = int(data.get("cluster_minutes", app_state.cluster_minutes))
+            if 1 <= cm <= 60:
+                app_state.cluster_minutes = cm
+                logger.info(f"Loaded cluster minutes: {cm}")
+    except (IOError, ValueError, json.JSONDecodeError) as e:
+        logger.error(f"Failed to load config: {e}")
+
+
+def _persist_watched_folder(path: Optional[str]) -> None:
+    """Persist watched folder path to uploads/watched_folder.txt."""
+    try:
+        os.makedirs("uploads", exist_ok=True)
+        config_path = os.path.join("uploads", "watched_folder.txt")
+        with open(config_path, "w") as f:
             f.write(path or "")
-    except Exception as e:
-        print('Failed to persist watched folder:', e)
+        logger.debug(f"Watched folder persisted: {path}")
+    except OSError as e:
+        logger.error(f"Failed to persist watched folder: {e}")
 
 
-def _load_persisted_watched_folder():
-    path = os.path.join("uploads", "watched_folder.txt")
-    if os.path.exists(path):
-        try:
-            with open(path) as f:
-                return f.read().strip() or None
-        except Exception as e:
-            print('Failed to load persisted watched folder:', e)
+def _load_persisted_watched_folder() -> Optional[str]:
+    """Load watched folder path from uploads/watched_folder.txt."""
+    config_path = os.path.join("uploads", "watched_folder.txt")
+    if not os.path.exists(config_path):
+        return None
+    
+    try:
+        with open(config_path) as f:
+            path = f.read().strip() or None
+            if path and os.path.isdir(path):
+                logger.debug(f"Loaded persisted watched folder: {path}")
+                return path
             return None
-    return None
+    except IOError as e:
+        logger.error(f"Failed to load persisted watched folder: {e}")
+        return None
 
 
-def _persist_landing_rate_path(path):
+def _persist_landing_rate_path(path: Optional[str]) -> None:
+    """Persist landing rate path to uploads/landing_rate_path.txt."""
     try:
         os.makedirs("uploads", exist_ok=True)
-        with open(os.path.join("uploads", "landing_rate_path.txt"), "w") as f:
+        config_path = os.path.join("uploads", "landing_rate_path.txt")
+        with open(config_path, "w") as f:
             f.write(path or "")
-    except Exception as e:
-        print('Failed to persist landing rate path:', e)
+        logger.debug(f"Landing rate path persisted: {path}")
+    except OSError as e:
+        logger.error(f"Failed to persist landing rate path: {e}")
 
 
-def _load_persisted_landing_rate_path():
-    path = os.path.join("uploads", "landing_rate_path.txt")
-    if os.path.exists(path):
-        try:
-            with open(path) as f:
-                return f.read().strip() or None
-        except Exception as e:
-            print('Failed to load persisted landing rate path:', e)
-            return None
-    return None
-
-
-def _persist_manual_links(mapping: dict):
+def _load_persisted_landing_rate_path() -> Optional[str]:
+    """Load landing rate path from uploads/landing_rate_path.txt."""
+    config_path = os.path.join("uploads", "landing_rate_path.txt")
+    if not os.path.exists(config_path):
+        return None
+    
     try:
-        import json
+        with open(config_path) as f:
+            path = f.read().strip() or None
+            if path and (os.path.isdir(path) or os.path.isfile(path)):
+                logger.debug(f"Loaded persisted landing rate path: {path}")
+                return path
+            return None
+    except IOError as e:
+        logger.error(f"Failed to load persisted landing rate path: {e}")
+        return None
+
+
+def _persist_manual_links(mapping: Dict[int, int]) -> None:
+    """Persist manual link overrides to uploads/manual_links.json."""
+    try:
         os.makedirs("uploads", exist_ok=True)
-        with open(os.path.join("uploads", "manual_links.json"), "w") as f:
+        config_path = os.path.join("uploads", "manual_links.json")
+        with open(config_path, "w") as f:
             json.dump(mapping or {}, f)
-    except Exception as e:
-        print('Failed to persist manual links:', e)
+        logger.debug(f"Manual links persisted: {len(mapping)} overrides")
+    except OSError as e:
+        logger.error(f"Failed to persist manual links: {e}")
 
 
-def _load_persisted_manual_links():
-    path = os.path.join("uploads", "manual_links.json")
-    if os.path.exists(path):
-        try:
-            import json
-            with open(path) as f:
-                data = json.load(f) or {}
-                # ensure keys are ints
-                return {int(k): int(v) for k, v in data.items() if isinstance(k, (str, int))}
-        except Exception as e:
-            print('Failed to load persisted manual links:', e)
-            return {}
-    return {}
+def _load_persisted_manual_links() -> Dict[int, int]:
+    """Load manual link overrides from uploads/manual_links.json."""
+    config_path = os.path.join("uploads", "manual_links.json")
+    if not os.path.exists(config_path):
+        return {}
+    
+    try:
+        with open(config_path) as f:
+            data = json.load(f) or {}
+            # Ensure keys and values are ints
+            result = {int(k): int(v) for k, v in data.items() if isinstance(k, (str, int))}
+            logger.debug(f"Loaded manual links: {len(result)} overrides")
+            return result
+    except (IOError, ValueError, json.JSONDecodeError) as e:
+        logger.error(f"Failed to load persisted manual links: {e}")
+        return {}
 
 
 def normalize_aircraft(name: str) -> str:
+    """Normalize aircraft name to standard code.
+    
+    Args:
+        name: Aircraft name/type string
+        
+    Returns:
+        Normalized aircraft code (e.g., 'C172', 'B738')
+    """
     if not name:
         return ""
     token = re.sub(r"[^A-Za-z0-9]", "", str(name)).upper()
@@ -164,30 +248,38 @@ def normalize_aircraft(name: str) -> str:
     return token
 
 
-def parse_landing_rates(file_path):
-    rows = []
+def parse_landing_rates(file_path: Optional[str]) -> List[Dict[str, Any]]:
+    """Parse landing rate CSV file.
+    
+    Args:
+        file_path: Path to landing rate log file
+        
+    Returns:
+        List of landing records with normalized fields
+    """
+    rows: List[Dict[str, Any]] = []
     if not file_path or not os.path.exists(file_path):
         return rows
+    
     try:
         with open(file_path, newline='') as csvfile:
-            for parts in reader(csvfile):
+            for line_num, parts in enumerate(reader(csvfile), start=1):
                 if not parts or len(parts) < 9:
                     continue
                 try:
                     # Columns: time, Aircraft, VS, G, noserate, float, quality, Q, Qrad_abs
                     time_str = parts[0].strip()
-                    # Parse to ISO and date
-                    dt = None
+                    dt: Optional[datetime] = None
+                    
                     try:
                         dt = datetime.strptime(time_str, "%Y-%m-%d %H:%M:%S")
-                    except Exception as e:
-                        print('Failed to parse time with first format:', e)
-                        # Fallback: try common variants
+                    except ValueError:
                         try:
                             dt = datetime.fromisoformat(time_str.replace("/", "-").replace("T", " "))
-                        except Exception as e2:
-                            print('Failed to parse time with fallback format:', e2)
+                        except ValueError:
+                            logger.debug(f"Could not parse time at line {line_num}: {time_str}")
                             dt = None
+                    
                     iso_time = dt.strftime("%Y-%m-%d %H:%M:%S") if dt else time_str
                     date_only = dt.strftime("%Y-%m-%d") if dt else time_str.split(" ")[0]
 
@@ -214,233 +306,311 @@ def parse_landing_rates(file_path):
                         "Q": q,
                         "Qrad_abs": qrad_abs,
                     })
-                except Exception as e:
-                    print('Failed to parse landing rate line:', e)
-                    # Skip malformed line
+                except (ValueError, IndexError) as e:
+                    logger.debug(f"Failed to parse landing rate line {line_num}: {e}")
                     continue
-    except Exception as e:
-        print('Failed to parse landing rates:', e)
+    except IOError as e:
+        logger.error(f"Failed to read landing rates file {file_path}: {e}")
+    
+    logger.info(f"Parsed {len(rows)} landing records from {file_path}")
     return rows
 
 
-def parse_logbook(file_path):
-    flights = []
+def parse_logbook(file_path: str) -> List[Dict[str, Any]]:
+    """Parse X-Plane logbook file.
+    
+    Args:
+        file_path: Path to X-Plane Pilot.txt logbook file
+        
+    Returns:
+        List of flight records
+    """
+    flights: List[Dict[str, Any]] = []
     if not os.path.exists(file_path):
+        logger.warning(f"Logbook file not found: {file_path}")
         return flights
 
-    with open(file_path) as f:
-        for line in f:
-            parts = line.strip().split()
-            if len(parts) < 11 or parts[0] != "2":
-                continue
+    try:
+        with open(file_path) as f:
+            for line_num, line in enumerate(f, start=1):
+                parts = line.strip().split()
+                if len(parts) < 11 or parts[0] != "2":
+                    continue
 
-            try:
-                date = datetime.strptime(parts[1], "%y%m%d").strftime("%Y-%m-%d")
-                dep = parts[2]
-                arr = parts[3]
-                landings = int(parts[4])
-                hours = float(parts[5])
-                tail = parts[-2]
-                aircraft = parts[-1]
-                norm_ac = normalize_aircraft(aircraft)
-                flights.append({
-                    "date": date,
-                    "dep": dep,
-                    "arr": arr,
-                    "landings": landings,
-                    "hours": hours,
-                    "tail": tail,
-                    "aircraft": aircraft,
-                    "norm_ac": norm_ac,
-                })
-            except Exception as e:
-                print('Exception occurred:', e)
-                continue
+                try:
+                    date = datetime.strptime(parts[1], "%y%m%d").strftime("%Y-%m-%d")
+                    dep = parts[2]
+                    arr = parts[3]
+                    landings = int(parts[4])
+                    hours = float(parts[5])
+                    tail = parts[-2]
+                    aircraft = parts[-1]
+                    norm_ac = normalize_aircraft(aircraft)
+                    flights.append({
+                        "date": date,
+                        "dep": dep,
+                        "arr": arr,
+                        "landings": landings,
+                        "hours": hours,
+                        "tail": tail,
+                        "aircraft": aircraft,
+                        "norm_ac": norm_ac,
+                    })
+                except (ValueError, IndexError) as e:
+                    logger.debug(f"Failed to parse logbook line {line_num}: {e}")
+                    continue
+    except IOError as e:
+        logger.error(f"Failed to read logbook file {file_path}: {e}")
+    
+    logger.info(f"Parsed {len(flights)} flights from {file_path}")
     return flights
 
 
-def get_current_flights():
-    global cached_flights, watched_folder
+def get_current_flights() -> List[Dict[str, Any]]:
+    """Get current list of flights, preferring watched folder if set.
+    
+    Returns:
+        List of flight dictionaries
+    """
     # Prefer the actively watched folder if set
-    if watched_folder:
-        watched_path = os.path.join(watched_folder, LOGBOOK_FILENAME)
+    if app_state.watched_folder:
+        watched_path = os.path.join(app_state.watched_folder, LOGBOOK_FILENAME)
         if os.path.exists(watched_path):
             return parse_logbook(watched_path)
-    if cached_flights is not None:
-        return cached_flights
+    if app_state.cached_flights is not None:
+        return app_state.cached_flights
     return parse_logbook(DEFAULT_LOG_FILE)
 
 
-def get_current_landings():
-    global landing_rate_path, landing_watched_folder
+def get_current_landings() -> List[Dict[str, Any]]:
+    """Get current list of landing records.
+    
+    Priority:
+        1. Explicit landing_rate_path file
+        2. landing_watched_folder
+        3. watched_folder (fallback)
+        4. logs/LandingRate.log (default)
+    
+    Returns:
+        List of landing records
+    """
     # If explicit file path set, prefer it
-    if landing_rate_path and os.path.isfile(landing_rate_path):
-        return parse_landing_rates(landing_rate_path)
+    if app_state.landing_rate_path and os.path.isfile(app_state.landing_rate_path):
+        return parse_landing_rates(app_state.landing_rate_path)
+    
     # If a folder is set for landing rates, read from there
-    if landing_watched_folder:
-        path = os.path.join(landing_watched_folder, LANDING_RATE_FILENAME)
+    if app_state.landing_watched_folder:
+        path = os.path.join(app_state.landing_watched_folder, LANDING_RATE_FILENAME)
         if os.path.exists(path):
             return parse_landing_rates(path)
+    
     # Try the logbook watched folder as a fallback
-    if watched_folder:
-        path = os.path.join(watched_folder, LANDING_RATE_FILENAME)
+    if app_state.watched_folder:
+        path = os.path.join(app_state.watched_folder, LANDING_RATE_FILENAME)
         if os.path.exists(path):
             return parse_landing_rates(path)
+    
     # Default to project logs folder if exists
     default_path = os.path.join("logs", LANDING_RATE_FILENAME)
     if os.path.exists(default_path):
         return parse_landing_rates(default_path)
+    
     return []
 
 
 class LogbookHandler(FileSystemEventHandler):
-    def on_modified(self, event):
-        global cached_flights, cached_filename
+    """Watch for changes to X-Plane logbook file."""
+    
+    def on_modified(self, event) -> None:  # type: ignore
+        """Handle file modification events."""
         if event.is_directory:
             return
         if os.path.basename(event.src_path) == LOGBOOK_FILENAME:
-            cached_flights = parse_logbook(event.src_path)
-            cached_filename = os.path.basename(event.src_path)
+            logger.info(f"Logbook modified: {event.src_path}")
+            app_state.cached_flights = parse_logbook(event.src_path)
+            app_state.cached_filename = os.path.basename(event.src_path)
             broadcast_update()
 
-    def on_created(self, event):
-        # Some editors write by creating a new file and replacing the old
+    def on_created(self, event) -> None:  # type: ignore
+        """Handle file creation events."""
         if event.is_directory:
             return
         if os.path.basename(event.src_path) == LOGBOOK_FILENAME:
+            logger.info(f"Logbook created: {event.src_path}")
             self.on_modified(event)
 
-    def on_moved(self, event):
-        # X-Plane or OS may move/replace the file atomically
+    def on_moved(self, event) -> None:  # type: ignore
+        """Handle file move/replace events."""
         try:
-            dest_path = getattr(event, 'dest_path', None)
-        except Exception as e:
-            print('Error getting dest_path from event:', e)
+            dest_path: Optional[str] = getattr(event, 'dest_path', None)
+        except AttributeError:
             dest_path = None
         path = dest_path or event.src_path
         if os.path.basename(path) == LOGBOOK_FILENAME:
-            class E:  # minimal shim with required attrs
+            logger.info(f"Logbook moved: {path}")
+            # Create minimal event shim for on_modified
+            class _FakeEvent:
                 is_directory = False
                 src_path = path
+            self.on_modified(_FakeEvent())
 
-            self.on_modified(E)
 
+def start_watcher(folder_path: str) -> None:
+    """Start file system watcher for logbook folder.
+    
+    Args:
+        folder_path: Path to folder containing X-Plane Pilot.txt
+    """
+    try:
+        if app_state.observer is not None:
+            try:
+                app_state.observer.stop()
+                app_state.observer.join(timeout=2)
+            except Exception as e:
+                logger.warning(f"Failed to stop existing observer: {e}")
+            app_state.observer = None
 
-def start_watcher(folder_path):
-    global observer
-    if observer is not None:
-        try:
-            observer.stop()
-            observer.join(timeout=2)
-        except Exception as e:
-            print('Failed to stop existing observer:', e)
-        observer = None
-
-    handler = LogbookHandler()
-    observer = Observer()
-    observer.schedule(handler, folder_path, recursive=False)
-    thread = threading.Thread(target=observer.start, daemon=True)
-    thread.start()
+        handler = LogbookHandler()
+        app_state.observer = Observer()
+        app_state.observer.schedule(handler, folder_path, recursive=False)
+        thread = threading.Thread(target=app_state.observer.start, daemon=True)
+        thread.start()
+        logger.info(f"Started logbook watcher on {folder_path}")
+    except Exception as e:
+        logger.error(f"Failed to start watcher: {e}")
 
 
 class LandingRateHandler(FileSystemEventHandler):
-    def __init__(self, target_filename=LANDING_RATE_FILENAME):
+    """Watch for changes to landing rate file."""
+    
+    def __init__(self, target_filename: str = LANDING_RATE_FILENAME) -> None:
+        """Initialize handler.
+        
+        Args:
+            target_filename: Name of landing rate file to watch
+        """
         super().__init__()
         self.target = target_filename
 
     @staticmethod
-    def _maybe_refresh(path):
-        global cached_landings
+    def _maybe_refresh() -> None:
+        """Refresh landing data and recompute links."""
         try:
-            cached_landings = get_current_landings()
+            app_state.cached_landings = get_current_landings()
             recompute_links()
             broadcast_landing_update()
+            logger.debug("Landing data refreshed after file system event")
         except Exception as e:
-            print('Failed to refresh landing rates:', e)
+            logger.error(f"Failed to refresh landing rates: {e}")
 
-    def on_modified(self, event):
+    def on_modified(self, event) -> None:  # type: ignore
+        """Handle file modification events."""
         if event.is_directory:
             return
         base = os.path.basename(event.src_path)
-        if (
-                (base == self.target or landing_rate_path) and
-                (os.path.abspath(event.src_path) == os.path.abspath(landing_rate_path))
-        ):
-            self._maybe_refresh(event.src_path)
+        if base == self.target and app_state.landing_rate_path:
+            if os.path.abspath(event.src_path) == os.path.abspath(app_state.landing_rate_path):
+                logger.debug(f"Landing rate file modified: {event.src_path}")
+                self._maybe_refresh()
 
-    def on_created(self, event):
+    def on_created(self, event) -> None:  # type: ignore
+        """Handle file creation events."""
         if event.is_directory:
             return
         self.on_modified(event)
 
-    def on_moved(self, event):
+    def on_moved(self, event) -> None:  # type: ignore
+        """Handle file move/replace events."""
         try:
-            dest_path = getattr(event, 'dest_path', None)
-        except Exception as e:
-            print('Error getting dest_path from event:', e)
+            dest_path: Optional[str] = getattr(event, 'dest_path', None)
+        except AttributeError:
             dest_path = None
         path = dest_path or event.src_path
         base = os.path.basename(path)
-        if base == self.target or (landing_rate_path and os.path.abspath(path) == os.path.abspath(landing_rate_path)):
-            self._maybe_refresh(path)
+        if base == self.target or (app_state.landing_rate_path and 
+                                   os.path.abspath(path) == os.path.abspath(app_state.landing_rate_path)):
+            logger.debug(f"Landing rate file moved: {path}")
+            self._maybe_refresh()
 
 
-def start_landing_rate_watcher(folder_path):
-    global landing_observer
-    if landing_observer is not None:
-        try:
-            landing_observer.stop()
-            landing_observer.join(timeout=2)
-        except Exception as e:
-            print('Failed to stop existing landing observer:', e)
-        landing_observer = None
-    handler = LandingRateHandler()
-    landing_observer = Observer()
-    landing_observer.schedule(handler, folder_path, recursive=False)
-    thread = threading.Thread(target=landing_observer.start, daemon=True)
-    thread.start()
+def start_landing_rate_watcher(folder_path: str) -> None:
+    """Start file system watcher for landing rate folder.
+    
+    Args:
+        folder_path: Path to folder containing landing rate file
+    """
+    try:
+        if app_state.landing_observer is not None:
+            try:
+                app_state.landing_observer.stop()
+                app_state.landing_observer.join(timeout=2)
+            except Exception as e:
+                logger.warning(f"Failed to stop existing landing observer: {e}")
+            app_state.landing_observer = None
+        
+        handler = LandingRateHandler()
+        app_state.landing_observer = Observer()
+        app_state.landing_observer.schedule(handler, folder_path, recursive=False)
+        thread = threading.Thread(target=app_state.landing_observer.start, daemon=True)
+        thread.start()
+        logger.info(f"Started landing rate watcher on {folder_path}")
+    except Exception as e:
+        logger.error(f"Failed to start landing rate watcher: {e}")
 
 
-def broadcast_update():
+def broadcast_update() -> None:
+    """Broadcast flight data update to all connected clients."""
     try:
         flights = get_current_flights()
-        # Prepare landing mapping for dashboard consumers
-        landing_idx_for_flight = []
+        landing_idx_for_flight: List[Optional[int]] = []
         landing_avail = False
+        
         try:
             recompute_links()
             landing_avail = bool(
-                (landing_rate_path or landing_watched_folder) or (cached_landings and len(cached_landings) > 0))
-            for i, _ in enumerate(flights):
-                indices = flight_to_landing_indices.get(i) if 'flight_to_landing_indices' in globals() else None
+                (app_state.landing_rate_path or app_state.landing_watched_folder) or 
+                (app_state.cached_landings and len(app_state.cached_landings) > 0))
+            for i in range(len(flights)):
+                indices = app_state.flight_to_landing_indices.get(i)
                 landing_idx_for_flight.append(indices[0] if indices else None)
         except Exception as e:
-            print('Failed to compute landing indices for broadcast:', e)
+            logger.error(f"Failed to compute landing indices for broadcast: {e}")
             landing_idx_for_flight = [None] * len(flights)
             landing_avail = False
+        
         payload = {
             "summary": summarise_flights(flights),
             "flights": flights,
-            "filename": cached_filename or DEFAULT_LOGBOOK_NAME,
-            "watched_folder": watched_folder,
+            "filename": app_state.cached_filename or DEFAULT_LOGBOOK_NAME,
+            "watched_folder": app_state.watched_folder,
             "landing_index_for_flight": landing_idx_for_flight,
             "landing_available": landing_avail,
         }
         socketio.emit("log_update", payload)
+        logger.debug(f"Broadcasted update: {len(flights)} flights")
     except Exception as e:
-        print('Failed to broadcast update:', e)
+        logger.error(f"Failed to broadcast update: {e}")
 
 
-def summarise_landings(landings):
-    # compute simple summary for charts
-    from collections import defaultdict
+def summarise_landings(landings: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Compute summary statistics for landing records.
+    
+    Args:
+        landings: List of landing records
+        
+    Returns:
+        Dictionary with count, mean_vs, and avg_vs_per_aircraft
+    """
     vs_values = [l.get("VS") for l in landings if isinstance(l.get("VS"), (int, float))]
     mean_vs = sum(vs_values) / len(vs_values) if vs_values else 0.0
-    avg_vs_by_ac = defaultdict(list)
+    
+    avg_vs_by_ac: Dict[str, List[float]] = defaultdict(list)
     for l in landings:
         if isinstance(l.get("VS"), (int, float)):
-            avg_vs_by_ac[l.get("norm_ac")].append(l.get("VS"))
+            avg_vs_by_ac[l.get("norm_ac", "")].append(l.get("VS"))
+    
     avg_vs_per_aircraft = {k: (sum(v) / len(v) if v else 0.0) for k, v in avg_vs_by_ac.items()}
+    
     return {
         "count": len(landings),
         "mean_vs": mean_vs,
@@ -448,7 +618,36 @@ def summarise_landings(landings):
     }
 
 
-def recompute_links():
+def recompute_links() -> None:
+    """Recompute landing-to-flight links using multiple heuristics.
+    
+    This function attempts to match landing records to flights using the following strategy:
+    
+    1. **Group by date & aircraft**: Both flights and landings are grouped by (date, norm_ac)
+    2. **Apply manual overrides**: Any manually configured links take precedence
+    3. **Heuristic matching** (in priority order):
+       - One-to-one: If 1 flight and 1 landing in group -> automatic match
+       - Sequence: If flight count equals landing count -> assume 1-to-1 sequence
+       - Clustering: Group landings by time (within CLUSTER_MINUTES window)
+         * If clusters == flights: 1 cluster per flight
+         * If clusters == total declared landings: Distribute by declared count
+       - Count-based: Distribute landings by each flight's declared landing count
+       - Fallback: Mark as ambiguous
+    
+    Results are stored in app_state:
+    - landing_links: Dict[landing_idx] -> {flight, flightIndex, linkConfidence}
+    - flight_to_landing_indices: Dict[flight_idx] -> [landing_indices]
+    
+    Confidence levels:
+    - 'manual': User-configured override
+    - 'unique-date-aircraft': Only one flight/landing combo
+    - 'sequence-assumed': Counts matched and assumed 1-to-1
+    - 'cluster-sequence': One cluster per flight
+    - 'cluster-assigned': Distributed by declared counts
+    - 'count-assigned': Distributed by flight landing counts
+    - 'unmatched': No flights in group for landing
+    - 'ambiguous': Multiple possible matches
+    """
     global landing_links, flight_link_index_by_key, flight_to_landing_indices, manual_overrides
     flights = get_current_flights()
     landings = cached_landings or []
@@ -640,21 +839,58 @@ def recompute_links():
             landing_links[item["idx"]] = {"flight": None, "linkConfidence": "ambiguous"}
 
 
-def broadcast_landing_update():
+def broadcast_landing_update() -> None:
+    """Broadcast landing rate data update to all connected clients."""
     try:
         payload = {
-            "landings": cached_landings,
-            "links": landing_links,
-            "flight_to_landing_indices": flight_to_landing_indices,
-            "summary": summarise_landings(cached_landings),
+            "landings": app_state.cached_landings,
+            "links": app_state.landing_links,
+            "flight_to_landing_indices": app_state.flight_to_landing_indices,
+            "summary": summarise_landings(app_state.cached_landings),
             "source": {
-                "file": landing_rate_path,
-                "folder": landing_watched_folder,
+                "file": app_state.landing_rate_path,
+                "folder": app_state.landing_watched_folder,
             }
         }
         socketio.emit("landing_rate_update", payload)
+        logger.debug(f"Broadcasted landing update: {len(app_state.cached_landings)} landings")
     except Exception as e:
-        print('Failed to broadcast landing update:', e)
+        logger.error(f"Failed to broadcast landing update: {e}")
+
+
+def summarise_flights(flights: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Compute summary statistics for flights.
+    
+    Args:
+        flights: List of flight records
+        
+    Returns:
+        Dictionary with total_hours, flights_by_aircraft, count_by_aircraft,
+        flights_by_route, and flights_by_date
+    """
+    total_hours: float = sum(f.get("hours", 0) for f in flights)
+    flights_by_aircraft: Dict[str, float] = defaultdict(float)
+    count_by_aircraft: Dict[str, int] = defaultdict(int)
+    flights_by_route: Dict[str, int] = defaultdict(int)
+    flights_by_date: Dict[str, float] = defaultdict(float)
+
+    for f in flights:
+        aircraft = f.get("aircraft", "Unknown")
+        flights_by_aircraft[aircraft] += f.get("hours", 0)
+        count_by_aircraft[aircraft] += 1
+        dep = f.get("dep", "")
+        arr = f.get("arr", "")
+        flights_by_route[f"{dep} → {arr}"] += 1
+        date = f.get("date", "")
+        flights_by_date[date] += f.get("hours", 0)
+
+    return {
+        "total_hours": total_hours,
+        "flights_by_aircraft": dict(flights_by_aircraft),
+        "count_by_aircraft": dict(count_by_aircraft),
+        "flights_by_route": dict(flights_by_route),
+        "flights_by_date": dict(flights_by_date),
+    }
 
 
 @app.route("/pick_folder", methods=["POST"])
