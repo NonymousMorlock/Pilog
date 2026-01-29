@@ -1,10 +1,13 @@
+import copy
+import csv
 import json
 import logging
 import os
 import re
 import tempfile
 import threading
-from collections import defaultdict
+import time
+from collections import OrderedDict, defaultdict
 from csv import reader
 from datetime import datetime
 from pathlib import Path
@@ -46,6 +49,21 @@ LOGBOOK_FILENAME = "X-Plane Pilot.txt"
 DEFAULT_LOG_FILE = f"logs/{LOGBOOK_FILENAME}"
 DEFAULT_LOGBOOK_NAME = "Default Logbook"
 LANDING_RATE_FILENAME = "LandingRate.log"
+
+MAP_TILE_URL_DEFAULT = "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+MAP_TILE_ATTRIBUTION_DEFAULT = "(c) OpenStreetMap contributors"
+MAP_MAX_AIRPORTS_DEFAULT = 200
+MAP_MAX_ROUTES_DEFAULT = 200
+MAP_CACHE_MAX_ENTRIES = 32
+MAP_CACHE_TTL_SECONDS = 15 * 60
+
+AIRPORT_BUNDLE_PATH = Path(__file__).resolve().parent / "static" / "data" / "airports_small.csv"
+AIRPORT_OVERRIDE_PATH = Path("uploads") / "airports.csv"
+MAP_INDEX_PATH = Path("uploads") / "cache" / "map_index.json"
+
+_AIRPORT_DB_CACHE: Dict[str, Any] = {"data": {}, "bundle_mtime": None, "override_mtime": None}
+_MAP_DATA_CACHE: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
+_MAP_CACHE_LOCK = threading.Lock()
 
 
 class AppState:
@@ -648,9 +666,9 @@ def recompute_links() -> None:
     - 'unmatched': No flights in group for landing
     - 'ambiguous': Multiple possible matches
     """
-    global landing_links, flight_link_index_by_key, flight_to_landing_indices, manual_overrides
     flights = get_current_flights()
-    landings = cached_landings or []
+    landings = app_state.cached_landings or []
+    manual_overrides = app_state.manual_overrides
     # Build groups
     from collections import defaultdict
     flights_by_group = defaultdict(list)
@@ -667,9 +685,9 @@ def recompute_links() -> None:
         landings_by_group[key].sort(key=lambda x: x["landing"].get("time"))
 
     # Reset outputs
-    landing_links = {}
-    flight_link_index_by_key = {}
-    flight_to_landing_indices = {}
+    landing_links: Dict[int, Dict[str, Any]] = {}
+    flight_link_index_by_key: Dict[Tuple[Any, Any, Any], List[int]] = {}
+    flight_to_landing_indices: Dict[int, List[int]] = {}
 
     for key, landing_list in landings_by_group.items():
         flights_list = flights_by_group.get(key, [])
@@ -748,6 +766,7 @@ def recompute_links() -> None:
                     return None
 
         clusters = []  # list[list[item]] where item ∈ working_landings
+        cluster_minutes = app_state.get_cluster_minutes()
         if ll_work > 0:
             sorted_work = sorted(working_landings, key=lambda x: x["landing"].get("time") or "")
             current = []
@@ -766,7 +785,7 @@ def recompute_links() -> None:
                         except Exception as e:
                             print('Failed to compute delta minutes in clustering:', e)
                             delta_min = None
-                    if delta_min is not None and delta_min <= CLUSTER_MINUTES:
+                    if delta_min is not None and delta_min <= cluster_minutes:
                         current.append(it)
                         last_dt = dt or last_dt
                     else:
@@ -838,6 +857,9 @@ def recompute_links() -> None:
         for item in working_landings:
             landing_links[item["idx"]] = {"flight": None, "linkConfidence": "ambiguous"}
 
+    app_state.landing_links = landing_links
+    app_state.flight_to_landing_indices = flight_to_landing_indices
+
 
 def broadcast_landing_update() -> None:
     """Broadcast landing rate data update to all connected clients."""
@@ -893,6 +915,379 @@ def summarise_flights(flights: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
+def _safe_int(value: Optional[str], default: int, minimum: Optional[int] = None,
+              maximum: Optional[int] = None) -> int:
+    try:
+        parsed = int(str(value).strip())
+    except Exception:
+        return default
+    if minimum is not None and parsed < minimum:
+        return default
+    if maximum is not None and parsed > maximum:
+        return default
+    return parsed
+
+
+def _safe_bool(value: Optional[str], default: bool = True) -> bool:
+    if value is None:
+        return default
+    token = str(value).strip().lower()
+    if token in {"0", "false", "no", "off"}:
+        return False
+    if token in {"1", "true", "yes", "on"}:
+        return True
+    return default
+
+
+def _parse_date(value: Optional[str]) -> Optional[datetime.date]:
+    if not value:
+        return None
+    try:
+        return datetime.strptime(value.strip(), "%Y-%m-%d").date()
+    except Exception:
+        return None
+
+
+def _parse_list(values: List[str]) -> List[str]:
+    items: List[str] = []
+    for entry in values:
+        if entry is None:
+            continue
+        for token in str(entry).split(","):
+            cleaned = token.strip()
+            if cleaned:
+                items.append(cleaned)
+    return items
+
+
+def get_map_config() -> Dict[str, Any]:
+    return {
+        "tile_url": os.getenv("MAP_TILE_URL", MAP_TILE_URL_DEFAULT),
+        "tile_attribution": os.getenv("MAP_TILE_ATTRIBUTION", MAP_TILE_ATTRIBUTION_DEFAULT),
+        "max_airports": _safe_int(os.getenv("MAP_MAX_AIRPORTS"), MAP_MAX_AIRPORTS_DEFAULT, minimum=10),
+        "max_routes": _safe_int(os.getenv("MAP_MAX_ROUTES"), MAP_MAX_ROUTES_DEFAULT, minimum=10),
+    }
+
+
+def _collect_aircraft_options(flights: List[Dict[str, Any]]) -> List[str]:
+    options: Set[str] = set()
+    for f in flights:
+        norm_ac = f.get("norm_ac") or normalize_aircraft(f.get("aircraft", ""))
+        if norm_ac:
+            options.add(norm_ac)
+    return sorted(options)
+
+
+def _map_filters_from_request(req) -> Dict[str, Any]:
+    config = get_map_config()
+    aircraft_values = _parse_list(req.args.getlist("aircraft"))
+    tag_values = _parse_list(req.args.getlist("tags"))
+    return {
+        "start": req.args.get("start", "").strip(),
+        "end": req.args.get("end", "").strip(),
+        "aircraft": aircraft_values,
+        "tags": tag_values,
+        "show_routes": _safe_bool(req.args.get("show_routes"), True),
+        "show_heatmap": _safe_bool(req.args.get("show_heatmap"), True),
+        "max_airports": _safe_int(req.args.get("max_airports"), config["max_airports"], minimum=10),
+        "max_routes": _safe_int(req.args.get("max_routes"), config["max_routes"], minimum=10),
+    }
+
+
+def _airport_db_signature() -> Tuple[Optional[float], Optional[float]]:
+    bundle_mtime = AIRPORT_BUNDLE_PATH.stat().st_mtime if AIRPORT_BUNDLE_PATH.exists() else None
+    override_mtime = AIRPORT_OVERRIDE_PATH.stat().st_mtime if AIRPORT_OVERRIDE_PATH.exists() else None
+    return bundle_mtime, override_mtime
+
+
+def _load_airport_csv(path: Path) -> Dict[str, Dict[str, Any]]:
+    data: Dict[str, Dict[str, Any]] = {}
+    if not path.exists():
+        return data
+    try:
+        with path.open(newline="", encoding="utf-8") as handle:
+            reader_obj = csv.DictReader(handle)
+            for row in reader_obj:
+                if not row:
+                    continue
+                icao = (row.get("icao") or row.get("ICAO") or "").strip().upper()
+                if not icao:
+                    continue
+                try:
+                    lat = float(row.get("lat", "") or row.get("LAT", ""))
+                    lon = float(row.get("lon", "") or row.get("LON", ""))
+                except Exception:
+                    continue
+                name = (row.get("name") or row.get("NAME") or "").strip()
+                try:
+                    elevation = float(row.get("elevation_ft", "") or row.get("ELEVATION_FT", "") or 0)
+                except Exception:
+                    elevation = 0.0
+                if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+                    continue
+                data[icao] = {
+                    "icao": icao,
+                    "name": name,
+                    "lat": lat,
+                    "lon": lon,
+                    "elevation_ft": elevation,
+                }
+    except OSError as e:
+        logger.error(f"Failed to read airport dataset {path}: {e}")
+    return data
+
+
+def load_airport_db() -> Dict[str, Dict[str, Any]]:
+    bundle_mtime, override_mtime = _airport_db_signature()
+    cached_bundle = _AIRPORT_DB_CACHE.get("bundle_mtime")
+    cached_override = _AIRPORT_DB_CACHE.get("override_mtime")
+    if _AIRPORT_DB_CACHE.get("data") and bundle_mtime == cached_bundle and override_mtime == cached_override:
+        return _AIRPORT_DB_CACHE["data"]
+
+    data = _load_airport_csv(AIRPORT_BUNDLE_PATH)
+    if AIRPORT_OVERRIDE_PATH.exists():
+        override_data = _load_airport_csv(AIRPORT_OVERRIDE_PATH)
+        if override_data:
+            data.update(override_data)
+
+    _AIRPORT_DB_CACHE["data"] = data
+    _AIRPORT_DB_CACHE["bundle_mtime"] = bundle_mtime
+    _AIRPORT_DB_CACHE["override_mtime"] = override_mtime
+    return data
+
+
+def airport_coords(icao: str) -> Optional[Tuple[float, float, str]]:
+    if not icao:
+        return None
+    db = load_airport_db()
+    record = db.get(str(icao).strip().upper())
+    if not record:
+        return None
+    return record.get("lat"), record.get("lon"), record.get("name") or ""
+
+
+def _flights_signature(flights: List[Dict[str, Any]]) -> int:
+    sig = 0
+    for f in flights:
+        sig ^= hash((
+            f.get("date"),
+            f.get("dep"),
+            f.get("arr"),
+            f.get("aircraft"),
+            f.get("landings"),
+        ))
+    return sig
+
+
+def _write_map_index(airport_count: int, missing_airports: List[str]) -> None:
+    try:
+        MAP_INDEX_PATH.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "last_updated": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "airport_count": airport_count,
+            "missing_airports": missing_airports,
+        }
+        with MAP_INDEX_PATH.open("w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2)
+    except OSError as e:
+        logger.error(f"Failed to write map index cache: {e}")
+
+
+def build_map_data(flights: List[Dict[str, Any]], filters: Dict[str, Any]) -> Dict[str, Any]:
+    start_date = _parse_date(filters.get("start"))
+    end_date = _parse_date(filters.get("end"))
+    raw_aircraft = _parse_list(filters.get("aircraft", []))
+    aircraft_filters = {normalize_aircraft(a) or a for a in raw_aircraft if a}
+    max_airports = filters.get("max_airports", MAP_MAX_AIRPORTS_DEFAULT)
+    max_routes = filters.get("max_routes", MAP_MAX_ROUTES_DEFAULT)
+
+    airport_db = load_airport_db()
+    airport_signature = _airport_db_signature()
+    cache_key = json.dumps({
+        "start": filters.get("start"),
+        "end": filters.get("end"),
+        "aircraft": sorted(aircraft_filters),
+        "max_airports": max_airports,
+        "max_routes": max_routes,
+        "sig": _flights_signature(flights),
+        "airport_sig": airport_signature,
+    }, sort_keys=True)
+
+    with _MAP_CACHE_LOCK:
+        cached = _MAP_DATA_CACHE.get(cache_key)
+        if cached:
+            cached_at = cached.get("ts")
+            if cached_at and (time.time() - cached_at) <= MAP_CACHE_TTL_SECONDS:
+                _MAP_DATA_CACHE.move_to_end(cache_key)
+                return copy.deepcopy(cached.get("payload", {}))
+            _MAP_DATA_CACHE.pop(cache_key, None)
+
+    filtered_flights: List[Dict[str, Any]] = []
+    for f in flights:
+        date_str = f.get("date")
+        if (start_date or end_date) and date_str:
+            try:
+                flight_date = datetime.strptime(str(date_str), "%Y-%m-%d").date()
+            except Exception:
+                continue
+            if start_date and flight_date < start_date:
+                continue
+            if end_date and flight_date > end_date:
+                continue
+
+        norm_ac = f.get("norm_ac") or normalize_aircraft(f.get("aircraft", ""))
+        if aircraft_filters and norm_ac not in aircraft_filters:
+            continue
+        filtered_flights.append(f)
+
+    routes_map: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    airport_stats: Dict[str, Dict[str, Any]] = {}
+    missing_airports: Set[str] = set()
+
+    def _ensure_airport(icao_code: str) -> Dict[str, Any]:
+        return airport_stats.setdefault(icao_code, {
+            "icao": icao_code,
+            "name": airport_db.get(icao_code, {}).get("name", ""),
+            "arrivals": 0,
+            "departures": 0,
+            "visits": 0,
+            "last_visit": None,
+            "aircraft_counts": defaultdict(int),
+        })
+
+    for f in filtered_flights:
+        dep = (f.get("dep") or "").strip().upper()
+        arr = (f.get("arr") or "").strip().upper()
+        if not dep or not arr:
+            continue
+        date_str = f.get("date")
+        norm_ac = f.get("norm_ac") or normalize_aircraft(f.get("aircraft", ""))
+
+        dep_stats = _ensure_airport(dep)
+        dep_stats["departures"] += 1
+        dep_stats["visits"] += 1
+        if date_str and (dep_stats["last_visit"] is None or date_str > dep_stats["last_visit"]):
+            dep_stats["last_visit"] = date_str
+        if norm_ac:
+            dep_stats["aircraft_counts"][norm_ac] += 1
+
+        arr_stats = _ensure_airport(arr)
+        arr_stats["arrivals"] += 1
+        arr_stats["visits"] += 1
+        if date_str and (arr_stats["last_visit"] is None or date_str > arr_stats["last_visit"]):
+            arr_stats["last_visit"] = date_str
+        if norm_ac:
+            arr_stats["aircraft_counts"][norm_ac] += 1
+
+        route_key = (dep, arr)
+        routes_map.setdefault(route_key, {
+            "dep": dep,
+            "arr": arr,
+            "count": 0,
+            "aircrafts": set(),
+        })
+        routes_map[route_key]["count"] += 1
+        if norm_ac:
+            routes_map[route_key]["aircrafts"].add(norm_ac)
+
+    top_route_overall = None
+    if routes_map:
+        top_route_overall = max(routes_map.values(), key=lambda r: r.get("count", 0))
+
+    top_airport_overall = None
+    if airport_stats:
+        top_airport_overall = max(airport_stats.values(), key=lambda a: a.get("visits", 0))
+
+    route_items: List[Dict[str, Any]] = []
+    for (dep, arr), route in routes_map.items():
+        dep_coords = airport_coords(dep)
+        arr_coords = airport_coords(arr)
+        if not dep_coords:
+            missing_airports.add(dep)
+        if not arr_coords:
+            missing_airports.add(arr)
+        if not dep_coords or not arr_coords:
+            continue
+        line = [[dep_coords[0], dep_coords[1]], [arr_coords[0], arr_coords[1]]]
+        route_items.append({
+            "dep": dep,
+            "arr": arr,
+            "count": route["count"],
+            "aircrafts": sorted(route["aircrafts"]),
+            "line": line,
+        })
+
+    airport_items: List[Dict[str, Any]] = []
+    for icao_code, stats in airport_stats.items():
+        coords = airport_coords(icao_code)
+        if not coords:
+            missing_airports.add(icao_code)
+            continue
+        aircraft_counts = stats.get("aircraft_counts", {})
+        top_aircrafts = sorted(aircraft_counts, key=aircraft_counts.get, reverse=True)[:5]
+        airport_items.append({
+            "icao": icao_code,
+            "name": stats.get("name") or coords[2],
+            "lat": coords[0],
+            "lon": coords[1],
+            "visits": stats.get("visits", 0),
+            "arrivals": stats.get("arrivals", 0),
+            "departures": stats.get("departures", 0),
+            "last_visit": stats.get("last_visit"),
+            "top_aircrafts": top_aircrafts,
+        })
+
+    route_items.sort(key=lambda r: r.get("count", 0), reverse=True)
+    airport_items.sort(key=lambda a: a.get("visits", 0), reverse=True)
+
+    limited_routes = False
+    limited_airports = False
+    if max_routes and len(route_items) > max_routes:
+        route_items = route_items[:max_routes]
+        limited_routes = True
+    if max_airports and len(airport_items) > max_airports:
+        airport_items = airport_items[:max_airports]
+        limited_airports = True
+
+    top_route = top_route_overall or (route_items[0] if route_items else None)
+    top_airport = top_airport_overall or (airport_items[0] if airport_items else None)
+
+    result = {
+        "routes": route_items,
+        "airports": airport_items,
+        "missing_airports": sorted(missing_airports),
+        "stats": {
+            "top_route": {
+                "dep": top_route.get("dep"),
+                "arr": top_route.get("arr"),
+                "count": top_route.get("count", 0),
+            } if top_route else None,
+            "top_airport": {
+                "icao": top_airport.get("icao"),
+                "visits": top_airport.get("visits", 0),
+            } if top_airport else None,
+            "total_routes": len(route_items),
+            "total_airports": len(airport_items),
+        },
+        "limits": {
+            "max_airports": max_airports,
+            "max_routes": max_routes,
+            "limited_airports": limited_airports,
+            "limited_routes": limited_routes,
+        },
+    }
+
+    _write_map_index(len(airport_db), sorted(missing_airports))
+
+    with _MAP_CACHE_LOCK:
+        _MAP_DATA_CACHE[cache_key] = {"ts": time.time(), "payload": copy.deepcopy(result)}
+        _MAP_DATA_CACHE.move_to_end(cache_key)
+        while len(_MAP_DATA_CACHE) > MAP_CACHE_MAX_ENTRIES:
+            _MAP_DATA_CACHE.popitem(last=False)
+
+    return copy.deepcopy(result)
+
+
 @app.route("/pick_folder", methods=["POST"])
 def pick_folder():
     if not TKINTER_AVAILABLE:
@@ -935,48 +1330,45 @@ def summarise_flights(flights):
 
 
 def init_watcher_if_configured():
-    global watched_folder, cached_flights, cached_filename
     persisted = _load_persisted_watched_folder()
     if persisted and os.path.isdir(persisted):
         logbook = os.path.join(persisted, LOGBOOK_FILENAME)
         if os.path.exists(logbook):
-            watched_folder = persisted
-            cached_flights = parse_logbook(logbook)
-            cached_filename = os.path.basename(logbook)
-            start_watcher(watched_folder)
+            app_state.watched_folder = persisted
+            app_state.cached_flights = parse_logbook(logbook)
+            app_state.cached_filename = os.path.basename(logbook)
+            start_watcher(app_state.watched_folder)
     # Landing rates: try persisted, else try watched_folder, else logs/LandingRate.log
     try:
-        global cached_landings, landing_rate_path, landing_watched_folder
         persisted_lr = _load_persisted_landing_rate_path()
         if persisted_lr:
             if os.path.isdir(persisted_lr):
-                landing_watched_folder = persisted_lr
-                path = os.path.join(landing_watched_folder, LANDING_RATE_FILENAME)
-                cached_landings = parse_landing_rates(path) if os.path.exists(path) else []
-                start_landing_rate_watcher(landing_watched_folder)
+                app_state.landing_watched_folder = persisted_lr
+                path = os.path.join(app_state.landing_watched_folder, LANDING_RATE_FILENAME)
+                app_state.cached_landings = parse_landing_rates(path) if os.path.exists(path) else []
+                start_landing_rate_watcher(app_state.landing_watched_folder)
             elif os.path.isfile(persisted_lr):
-                landing_rate_path = persisted_lr
-                landing_watched_folder = os.path.dirname(landing_rate_path)
-                cached_landings = parse_landing_rates(landing_rate_path)
-                start_landing_rate_watcher(landing_watched_folder)
-        elif watched_folder:
+                app_state.landing_rate_path = persisted_lr
+                app_state.landing_watched_folder = os.path.dirname(app_state.landing_rate_path)
+                app_state.cached_landings = parse_landing_rates(app_state.landing_rate_path)
+                start_landing_rate_watcher(app_state.landing_watched_folder)
+        elif app_state.watched_folder:
             # auto: if LandingRate.log exists alongside logbook, use it
-            candidate = os.path.join(watched_folder, LANDING_RATE_FILENAME)
+            candidate = os.path.join(app_state.watched_folder, LANDING_RATE_FILENAME)
             if os.path.exists(candidate):
-                landing_watched_folder = watched_folder
-                cached_landings = parse_landing_rates(candidate)
-                start_landing_rate_watcher(landing_watched_folder)
+                app_state.landing_watched_folder = app_state.watched_folder
+                app_state.cached_landings = parse_landing_rates(candidate)
+                start_landing_rate_watcher(app_state.landing_watched_folder)
         else:
             default_candidate = os.path.join("logs", LANDING_RATE_FILENAME)
             if os.path.exists(default_candidate):
-                landing_watched_folder = "logs"
-                cached_landings = parse_landing_rates(default_candidate)
-                start_landing_rate_watcher(landing_watched_folder)
+                app_state.landing_watched_folder = "logs"
+                app_state.cached_landings = parse_landing_rates(default_candidate)
+                start_landing_rate_watcher(app_state.landing_watched_folder)
         # Load config and manual overrides
         try:
             _load_config()
-            global manual_overrides
-            manual_overrides = _load_persisted_manual_links()
+            app_state.manual_overrides = _load_persisted_manual_links()
         except Exception as e:
             print('Failed to load manual overrides:', e)
         recompute_links()
@@ -986,20 +1378,18 @@ def init_watcher_if_configured():
 
 @app.before_request
 def ensure_watcher_initialized():
-    global watcher_initialized
-    if watcher_initialized:
+    if app_state.watcher_initialized:
         return
     with watcher_init_lock:
-        if watcher_initialized:
+        if app_state.watcher_initialized:
             return
         init_watcher_if_configured()
-        watcher_initialized = True
+        app_state.watcher_initialized = True
 
 
 @app.route("/", methods=['GET', 'POST'])
 def dashboard():
-    global cached_flights, cached_filename
-    filename = cached_filename or DEFAULT_LOGBOOK_NAME
+    filename = app_state.cached_filename or DEFAULT_LOGBOOK_NAME
 
     if request.method == "POST":
         uploaded_file = request.files.get("logfile")
@@ -1007,20 +1397,19 @@ def dashboard():
             temp_path = os.path.join(app.config['UPLOAD_FOLDER'], uploaded_file.filename)
             uploaded_file.save(temp_path)
             filename = uploaded_file.filename
-            cached_flights = parse_logbook(temp_path)
-            cached_filename = filename
+            app_state.cached_flights = parse_logbook(temp_path)
+            app_state.cached_filename = filename
             broadcast_update()
 
     flights = get_current_flights()
     # Ensure links are up to date and build a per-flight mapping to first landing index
     try:
-        global cached_landings
-        if cached_landings is None or not isinstance(cached_landings, list):
-            cached_landings = get_current_landings()
+        if app_state.cached_landings is None or not isinstance(app_state.cached_landings, list):
+            app_state.cached_landings = get_current_landings()
         recompute_links()
         landing_index_for_flight = []
         for i, _ in enumerate(flights):
-            indices = flight_to_landing_indices.get(i) if 'flight_to_landing_indices' in globals() else None
+            indices = app_state.flight_to_landing_indices.get(i)
             landing_index_for_flight.append(indices[0] if indices else None)
     except Exception as e:
         print('Failed to compute landing indices for flights:', e)
@@ -1028,13 +1417,14 @@ def dashboard():
     data = summarise_flights(flights)
 
     landing_available = bool(
-        (landing_rate_path or landing_watched_folder) or (cached_landings and len(cached_landings) > 0))
+        (app_state.landing_rate_path or app_state.landing_watched_folder) or
+        (app_state.cached_landings and len(app_state.cached_landings) > 0))
     return render_template(
         "dashboard.html",
         data=data,
         flights=flights,
         filename=filename,
-        watched_folder=watched_folder,
+        watched_folder=app_state.watched_folder,
         landing_index_for_flight=landing_index_for_flight,
         landing_available=landing_available,
     )
@@ -1043,8 +1433,7 @@ def dashboard():
 @app.route("/landing-rates", methods=['GET'])
 def landing_rates_page():
     # Initial render, page will fetch live data via socket/API
-    global landing_rate_path, landing_watched_folder
-    landings = cached_landings or get_current_landings()
+    landings = app_state.cached_landings or get_current_landings()
     try:
         recompute_links()
     except Exception as e:
@@ -1053,15 +1442,67 @@ def landing_rates_page():
         "landing_rates.html",
         summary=summarise_landings(landings),
         landings=landings,
-        links=landing_links,
-        source_file=landing_rate_path,
-        source_folder=landing_watched_folder,
+        links=app_state.landing_links,
+        source_file=app_state.landing_rate_path,
+        source_folder=app_state.landing_watched_folder,
     )
+
+
+@app.route("/map", methods=["GET"])
+def map_page():
+    flights = get_current_flights()
+    map_filters = _map_filters_from_request(request)
+    map_data = build_map_data(flights, map_filters)
+    map_data["filters"] = {
+        "aircraft_options": _collect_aircraft_options(flights),
+        "tag_options": [],
+        "tags_inert": True,
+    }
+    map_data["applied_filters"] = {
+        "start": map_filters.get("start"),
+        "end": map_filters.get("end"),
+        "aircraft": _parse_list(map_filters.get("aircraft", [])),
+    }
+    config = get_map_config()
+    tile_url = config.get("tile_url", MAP_TILE_URL_DEFAULT)
+    tile_external = tile_url.startswith("http")
+    return render_template(
+        "map.html",
+        map_data=map_data,
+        map_config={
+            "tile_url": tile_url,
+            "tile_attribution": config.get("tile_attribution", MAP_TILE_ATTRIBUTION_DEFAULT),
+            "max_airports": config.get("max_airports", MAP_MAX_AIRPORTS_DEFAULT),
+            "max_routes": config.get("max_routes", MAP_MAX_ROUTES_DEFAULT),
+            "tile_external": tile_external,
+        },
+        map_filters=map_filters,
+    )
+
+
+@app.route("/map/data", methods=["GET"])
+def map_data():
+    flights = get_current_flights()
+    map_filters = _map_filters_from_request(request)
+    payload = build_map_data(flights, map_filters)
+    payload["filters"] = {
+        "aircraft_options": _collect_aircraft_options(flights),
+        "tag_options": [],
+        "tags_inert": True,
+    }
+    payload["applied_filters"] = {
+        "start": map_filters.get("start"),
+        "end": map_filters.get("end"),
+        "aircraft": _parse_list(map_filters.get("aircraft", [])),
+    }
+    if map_filters.get("tags"):
+        payload["warnings"] = payload.get("warnings", [])
+        payload["warnings"].append("Tag filtering is not available yet; tag filters are ignored.")
+    return jsonify(payload)
 
 
 @app.route("/set_folder", methods=["POST"])
 def set_folder():
-    global watched_folder, cached_flights, cached_filename
     folder_path = request.form.get("folder_path", "").strip()
     if not folder_path or not os.path.isdir(folder_path):
         return jsonify({"error": "Invalid folder path"}), 400
@@ -1070,14 +1511,14 @@ def set_folder():
     if not os.path.exists(logbook_path):
         return jsonify({"error": f"{LOGBOOK_FILENAME} not found in folder"}), 400
 
-    watched_folder = folder_path
-    _persist_watched_folder(watched_folder)
-    cached_flights = parse_logbook(logbook_path)
-    cached_filename = os.path.basename(logbook_path)
-    start_watcher(watched_folder)
-    print(f"Watching folder set to: {watched_folder}")
+    app_state.watched_folder = folder_path
+    _persist_watched_folder(app_state.watched_folder)
+    app_state.cached_flights = parse_logbook(logbook_path)
+    app_state.cached_filename = os.path.basename(logbook_path)
+    start_watcher(app_state.watched_folder)
+    print(f"Watching folder set to: {app_state.watched_folder}")
     broadcast_update()
-    return jsonify({"message": f"Watching {watched_folder}"})
+    return jsonify({"message": f"Watching {app_state.watched_folder}"})
 
 
 @app.route("/data", methods=["GET"])
@@ -1087,8 +1528,8 @@ def get_data():
     return jsonify({
         "summary": summary,
         "flights": flights,
-        "filename": cached_filename or DEFAULT_LOGBOOK_NAME,
-        "watched_folder": watched_folder,
+        "filename": app_state.cached_filename or DEFAULT_LOGBOOK_NAME,
+        "watched_folder": app_state.watched_folder,
     })
 
 
@@ -1096,17 +1537,17 @@ def get_data():
 
 @app.route("/landing-rates/data", methods=["GET"])
 def get_landing_data():
-    landings = cached_landings or get_current_landings()
+    landings = app_state.cached_landings or get_current_landings()
     return jsonify({
         "landings": landings,
-        "links": landing_links,
-        "flight_to_landing_indices": flight_to_landing_indices,
+        "links": app_state.landing_links,
+        "flight_to_landing_indices": app_state.flight_to_landing_indices,
         "summary": summarise_landings(landings),
         "source": {
-            "file": landing_rate_path,
-            "folder": landing_watched_folder,
+            "file": app_state.landing_rate_path,
+            "folder": app_state.landing_watched_folder,
         },
-        "cluster_minutes": CLUSTER_MINUTES,
+        "cluster_minutes": app_state.get_cluster_minutes(),
     })
 
 
@@ -1120,9 +1561,8 @@ def resolve_link():
     except Exception as e:
         print('Error parsing indices for resolve_link:', e)
         return jsonify({"error": "Invalid indices"}), 400
-    global manual_overrides
-    manual_overrides[li] = fi
-    _persist_manual_links(manual_overrides)
+    app_state.manual_overrides[li] = fi
+    _persist_manual_links(app_state.manual_overrides)
     recompute_links()
     broadcast_landing_update()
     return jsonify({"message": "Link set", "landing_index": li, "flight_index": fi})
@@ -1136,7 +1576,7 @@ def candidates_for_landing():
         print('Error parsing landing_index for candidates:', e)
         return jsonify({"error": "Invalid landing_index"}), 400
     flights = get_current_flights()
-    landings = cached_landings or []
+    landings = app_state.cached_landings or []
     if landing_index < 0 or landing_index >= len(landings):
         return jsonify({"error": "landing_index out of range"}), 400
     landing = landings[landing_index]
@@ -1170,9 +1610,9 @@ def candidates_for_landing():
 @app.route("/links/list", methods=["GET"])
 def list_overrides():
     flights = get_current_flights()
-    landings = cached_landings or []
+    landings = app_state.cached_landings or []
     items = []
-    for li, fi in (manual_overrides or {}).items():
+    for li, fi in (app_state.manual_overrides or {}).items():
         landing = landings[li] if 0 <= li < len(landings) else None
         flight = flights[fi] if 0 <= fi < len(flights) else None
         items.append({"landing_index": li, "flight_index": fi, "landing": landing, "flight": flight})
@@ -1181,7 +1621,6 @@ def list_overrides():
 
 @app.route("/links/clear", methods=["POST"])
 def clear_override():
-    global manual_overrides
     li_raw = request.form.get("landing_index", "").strip()
     if li_raw:
         try:
@@ -1189,12 +1628,12 @@ def clear_override():
         except Exception as e:
             print('Error parsing landing_index for clear_override:', e)
             return jsonify({"error": "Invalid landing_index"}), 400
-        if li in manual_overrides:
-            manual_overrides.pop(li, None)
+        if li in app_state.manual_overrides:
+            app_state.manual_overrides.pop(li, None)
     else:
         # Clear all
-        manual_overrides = {}
-    _persist_manual_links(manual_overrides)
+        app_state.manual_overrides = {}
+    _persist_manual_links(app_state.manual_overrides)
     recompute_links()
     broadcast_landing_update()
     return jsonify({"message": "Cleared"})
@@ -1202,7 +1641,6 @@ def clear_override():
 
 @app.route("/config/cluster", methods=["POST"])
 def set_cluster_minutes():
-    global CLUSTER_MINUTES
     try:
         minutes = int(request.form.get("minutes", ""))
     except Exception as e:
@@ -1210,12 +1648,12 @@ def set_cluster_minutes():
         return jsonify({"error": "Invalid minutes"}), 400
     if minutes < 1 or minutes > 60:
         return jsonify({"error": "Minutes out of range (1-60)"}), 400
-    CLUSTER_MINUTES = minutes
+    app_state.set_cluster_minutes(minutes)
     _persist_config()
     # Recompute with new setting
     recompute_links()
     broadcast_landing_update()
-    return jsonify({"message": "Updated", "cluster_minutes": CLUSTER_MINUTES})
+    return jsonify({"message": "Updated", "cluster_minutes": app_state.get_cluster_minutes()})
 
 
 @app.route("/pick_landing_rate_folder", methods=["POST"])
@@ -1237,21 +1675,20 @@ def pick_landing_rate_folder():
 
 @app.route("/set_landing_rate_folder", methods=["POST"])
 def set_landing_rate_folder():
-    global landing_watched_folder, landing_rate_path, cached_landings
     folder_path = request.form.get("folder_path", "").strip()
     if not folder_path or not os.path.isdir(folder_path):
         return jsonify({"error": "Invalid folder path"}), 400
     log_path = os.path.join(folder_path, LANDING_RATE_FILENAME)
     if not os.path.exists(log_path):
         return jsonify({"error": f"{LANDING_RATE_FILENAME} not found in folder"}), 400
-    landing_watched_folder = folder_path
-    landing_rate_path = None
-    _persist_landing_rate_path(landing_watched_folder)
-    cached_landings = parse_landing_rates(log_path)
-    start_landing_rate_watcher(landing_watched_folder)
+    app_state.landing_watched_folder = folder_path
+    app_state.landing_rate_path = None
+    _persist_landing_rate_path(app_state.landing_watched_folder)
+    app_state.cached_landings = parse_landing_rates(log_path)
+    start_landing_rate_watcher(app_state.landing_watched_folder)
     recompute_links()
     broadcast_landing_update()
-    return jsonify({"message": f"Watching {landing_watched_folder}"})
+    return jsonify({"message": f"Watching {app_state.landing_watched_folder}"})
 
 
 @app.route("/pick_landing_rate_file", methods=["POST"])
@@ -1276,29 +1713,27 @@ def pick_landing_rate_file():
 
 @app.route("/set_landing_rate_file", methods=["POST"])
 def set_landing_rate_file():
-    global landing_rate_path, landing_watched_folder, cached_landings
     file_path = request.form.get("file_path", "").strip()
     if not file_path or not os.path.isfile(file_path):
         return jsonify({"error": "Invalid file path"}), 400
-    landing_rate_path = file_path
-    landing_watched_folder = os.path.dirname(file_path)
-    _persist_landing_rate_path(landing_rate_path)
-    cached_landings = parse_landing_rates(landing_rate_path)
-    start_landing_rate_watcher(landing_watched_folder)
+    app_state.landing_rate_path = file_path
+    app_state.landing_watched_folder = os.path.dirname(file_path)
+    _persist_landing_rate_path(app_state.landing_rate_path)
+    app_state.cached_landings = parse_landing_rates(app_state.landing_rate_path)
+    start_landing_rate_watcher(app_state.landing_watched_folder)
     recompute_links()
     broadcast_landing_update()
-    return jsonify({"message": f"Watching {landing_rate_path}"})
+    return jsonify({"message": f"Watching {app_state.landing_rate_path}"})
 
 
 @app.route("/upload_landing_rate", methods=["POST"])
 def upload_landing_rate():
-    global cached_landings
     uploaded_file = request.files.get("landingrate")
     if not uploaded_file:
         return jsonify({"error": "No file uploaded"}), 400
     temp_path = os.path.join(app.config['UPLOAD_FOLDER'], uploaded_file.filename)
     uploaded_file.save(temp_path)
-    cached_landings = parse_landing_rates(temp_path)
+    app_state.cached_landings = parse_landing_rates(temp_path)
     recompute_links()
     broadcast_landing_update()
     return jsonify({"message": "Landing rate file processed"})

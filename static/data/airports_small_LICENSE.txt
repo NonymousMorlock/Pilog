@@ -1,0 +1,5 @@
+airports_small.csv
+
+This bundled dataset contains a small set of commonly used airports with approximate
+coordinates and elevations for demo and local-only visualization. It is provided
+without warranties and is intended for personal/offline use in Pilog.
