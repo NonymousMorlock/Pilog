@@ -167,9 +167,67 @@
     });
   }
 
+  function updateMapWidget(data) {
+    const topAirportEl = document.getElementById('mapTopAirport');
+    const topRouteEl = document.getElementById('mapTopRoute');
+    const airportCountEl = document.getElementById('mapAirportCount');
+    const routeCountEl = document.getElementById('mapRouteCount');
+    const missingEl = document.getElementById('mapMissingAirports');
+    const limitEl = document.getElementById('mapLimitNote');
+    if (!topAirportEl || !topRouteEl || !airportCountEl || !routeCountEl) return;
+
+    const stats = data && data.stats ? data.stats : {};
+    if (stats.top_airport) {
+      topAirportEl.textContent = stats.top_airport.icao + ' (' + stats.top_airport.visits + ')';
+    } else {
+      topAirportEl.textContent = '--';
+    }
+    if (stats.top_route) {
+      topRouteEl.textContent = stats.top_route.dep + ' -> ' + stats.top_route.arr + ' (' + stats.top_route.count + ')';
+    } else {
+      topRouteEl.textContent = '--';
+    }
+    airportCountEl.textContent = stats.total_airports != null ? stats.total_airports : (data.airports || []).length;
+    routeCountEl.textContent = stats.total_routes != null ? stats.total_routes : (data.routes || []).length;
+
+    if (missingEl) {
+      const missing = Array.isArray(data.missing_airports) ? data.missing_airports : [];
+      if (missing.length) {
+        const slice = missing.slice(0, 5).join(', ');
+        missingEl.textContent = 'Missing coords: ' + slice + (missing.length > 5 ? ' +' + (missing.length - 5) : '');
+      } else {
+        missingEl.textContent = '';
+      }
+    }
+
+    if (limitEl) {
+      const limitedAirports = data.limits && data.limits.limited_airports;
+      const limitedRoutes = data.limits && data.limits.limited_routes;
+      if (limitedAirports || limitedRoutes) {
+        const parts = [];
+        if (limitedAirports) parts.push('Airports limited to ' + data.limits.max_airports);
+        if (limitedRoutes) parts.push('Routes limited to ' + data.limits.max_routes);
+        limitEl.textContent = parts.join(' / ');
+      } else {
+        limitEl.textContent = '';
+      }
+    }
+  }
+
+  async function loadMapWidget() {
+    if (!document.getElementById('mapTopAirport')) return;
+    try {
+      const res = await fetch('/map/data');
+      if (!res.ok) return;
+      const json = await res.json();
+      updateMapWidget(json || {});
+    } catch (_) {}
+  }
+
   // Initial render
   renderFromSummary(initialData);
   renderFlightTable();
+  loadMapWidget();
   const prevBtn = document.getElementById('prevFlightPage');
   const nextBtn = document.getElementById('nextFlightPage');
   if (prevBtn) prevBtn.onclick = () => { if (flightPage > 0) { flightPage--; renderFlightTable(); } };
@@ -220,6 +278,7 @@
       const wfEl = document.getElementById('watchedFolder');
       if (wfEl) wfEl.textContent = payload.watched_folder;
     }
+    loadMapWidget();
   });
 
   // Deep-link target flight row
@@ -247,5 +306,3 @@
     } catch(_) {}
   })();
 })();
-
-

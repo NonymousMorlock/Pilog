@@ -21,6 +21,30 @@
   <p>Currently viewing: <strong id="currentFilename">{{ filename }}</strong></p>
   <p>Total Flight Hours: <strong id="totalHours">{{ "%.1f"|format(data.total_hours) }}</strong> hrs</p>
 
+  <div class="card map-widget">
+    <div class="map-widget-header">
+      <div>
+        <h2>Map Visuals</h2>
+        <div class="muted">Your most visited airports and common routes.</div>
+      </div>
+      <a class="btn ghost" href="/map">Open map</a>
+    </div>
+    <div class="map-widget-body">
+      <div class="map-preview" id="mapPreview">
+        <div class="map-preview-overlay">
+          <div class="map-stat">Top airport: <span id="mapTopAirport">--</span></div>
+          <div class="map-stat">Top route: <span id="mapTopRoute">--</span></div>
+          <div class="map-stat muted" id="mapMissingAirports"></div>
+        </div>
+      </div>
+      <div class="map-widget-meta">
+        <div class="map-stat">Airports: <span id="mapAirportCount">0</span></div>
+        <div class="map-stat">Routes: <span id="mapRouteCount">0</span></div>
+        <div class="map-stat muted" id="mapLimitNote"></div>
+      </div>
+    </div>
+  </div>
+
   {% if flights|length == 0 %}
   <div class="card" role="status" aria-live="polite" style="margin:12px 0;">
     <div class="row" style="justify-content: space-between; align-items:center;">
